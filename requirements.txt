@@ -1,0 +1,9 @@
+# Phase 1 - foundation. More deps (langgraph, langchain, streamlit) are added in later phases.
+
+# Config / data validation
+pydantic==2.13.5
+pydantic-settings==2.15.0
+
+# Dev / test
+pytest==9.1.1
+ruff==0.16.9

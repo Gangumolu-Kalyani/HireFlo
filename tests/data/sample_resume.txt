@@ -1,0 +1,22 @@
+Alex Rivera
+alex.rivera@example.com
+
+SUMMARY
+Backend engineer with 5 years of experience building Python web services.
+
+SKILLS
+Python, FastAPI, Django, PostgreSQL, Docker, GitHub Actions, AWS
+
+EXPERIENCE
+Backend Engineer - Example Corp (2021 - present)
+- Built REST APIs in FastAPI serving 2M requests/day
+- Containerised services with Docker and set up CI with GitHub Actions
+
+Software Developer - Sample Labs (2019 - 2021)
+- Developed Django applications backed by PostgreSQL
+
+PROJECTS
+- Resume keyword matcher using LangChain and OpenAI embeddings
+
+EDUCATION
+B.Sc. Computer Science, State University, 2019
