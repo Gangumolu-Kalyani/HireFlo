@@ -4,7 +4,75 @@ An AI-powered recruitment agent (LangGraph + OpenRouter) that parses a job descr
 scores candidates against a JD-based rubric with evidence, ranks them, and proposes interviews —
 **always behind a human approval gate**.
 
-> Status: **Phase 2 — basic recruitment agent building blocks.** No autonomous agent loop yet.
+> Status: **Phase 3 — recruitment agent tools.** No autonomous agent loop yet.
+
+## What Phase 3 implements
+
+Four independently-testable LangChain tools that the Phase 4 LangGraph agent will orchestrate.
+All tools are importable from one place:
+
+```python
+from app.tools import (
+    parse_resume,
+    score_candidate,
+    check_availability,
+    propose_interview,
+)
+```
+
+### 1. `parse_resume`
+
+Wraps the Phase 2 resume parser.  Accepts raw resume text, treats it as **untrusted data** (same
+injection-prevention as the underlying service), and returns a `CandidateProfile`.  Empty or
+oversized input is rejected before any LLM call.
+
+```
+resume_text ──► parse_resume tool ──► resume_parser service ──► LLMService ──► CandidateProfile
+```
+
+### 2. `score_candidate`
+
+Scores a candidate profile against a rubric of weighted criteria.
+
+- The **LLM** assigns a 0–5 score and evidence for each criterion.
+- The **final weighted score is calculated in Python** — the LLM never touches it.
+- Formula: `Σ (score_i / 5 × weight_i) / Σ weight_i × 5`
+- Protected/irrelevant attributes (name, email, phone, gender, age, nationality, religion, caste,
+  marital status, college prestige) are **excluded** from the profile text sent to the LLM.
+  Changing a candidate's name or contact details cannot change their score.
+
+```
+CandidateProfile + rubric ──► LLM (per-criterion scores) ──► Python weighted sum ──► CandidateScore
+```
+
+### 3. `check_availability`
+
+Returns available interview slots for a candidate in an ISO week (e.g. `"2026-W41"`).
+
+- Uses a **deterministic fake calendar** — no real calendar API or personal data.
+- Slots are derived from the candidate name and week via SHA-256, so the same inputs always
+  return the same slots.
+- Invalid week formats (e.g. `"2026-W54"`, `"W41"`) are rejected.
+
+Example output:
+```json
+{"candidate": "Alex Rivera", "week": "2026-W41", "available_slots": ["Monday 10:00", "Tuesday 14:00", "Wednesday 11:00"]}
+```
+
+### 4. `propose_interview`
+
+Creates a structured interview proposal with `status: "PENDING_APPROVAL"`.
+
+> ⚠️  **This tool does NOT book an interview.**  It only produces a proposal.
+> No email is sent. No calendar event is created. The candidate is not contacted.
+> Human approval and actual booking are implemented in Phase 5.
+
+Example output:
+```json
+{"candidate": "Alex Rivera", "slot": "Tuesday 14:00", "status": "PENDING_APPROVAL", "proposed_at": "2026-10-01T...", "note": "This is a proposal only. No email has been sent..."}
+```
+
+---
 
 ## What Phase 2 implements
 
@@ -108,6 +176,12 @@ app/
   config.py              settings from env / .env
   models/                Pydantic models (job, candidate, scoring)
   services/              llm_service, resume_parser, job_parser
+  tools/                 four LangChain tools (Phase 3)
+    __init__.py          exports parse_resume, score_candidate, check_availability, propose_interview
+    resume_tool.py       thin wrapper around resume_parser service
+    scoring_tool.py      LLM scores criteria; Python computes weighted score
+    availability_tool.py deterministic fake calendar (SHA-256 based)
+    interview_tool.py    PENDING_APPROVAL proposal only — no booking
 tests/
   data/                  fictional sample JD, resume, and a prompt-injection resume
   conftest.py            FakeLLMService + fixtures
@@ -131,7 +205,7 @@ requirements.txt
 
 1. ✅ Project foundation
 2. ✅ Basic recruitment agent building blocks
-3. Agent tools
+3. ✅ Agent tools
 4. LangGraph state and workflow
 5. Guardrails and human approval
 6. Streamlit UI
