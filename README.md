@@ -4,7 +4,199 @@ An AI-powered recruitment agent (LangGraph + OpenRouter) that parses a job descr
 scores candidates against a JD-based rubric with evidence, ranks them, and proposes interviews —
 **always behind a human approval gate**.
 
-> Status: **Phase 4 — LangGraph agent.** Human-in-the-loop interview approval implemented.
+> Status: **Phase 5 — Guardrails, security, fairness & human review implemented.**
+
+## What Phase 5 implements
+
+Guardrails, security hardening, fairness checks, and human-review summaries
+layered on top of the Phase 4 LangGraph workflow.
+
+### Core principle
+
+> **Candidate resumes are untrusted data, not instructions.**
+> The agent never executes text found in a resume or job description.
+> Every piece of candidate text is treated as data to be processed,
+> not as a command to be followed.
+
+> **The agent does not automatically make interview-booking actions.**
+> Human approval is required before any interview is confirmed, any email
+> is sent, or any calendar event is created.
+
+### Updated workflow
+
+```
+Resume + JD
+      │
+      ▼
+INPUT GUARDRAIL        ← validates input; detects injection; blocks on HIGH severity
+      │  └─ GUARDRAIL_BLOCKED → END
+      ▼
+parse_resume
+      │
+      ▼
+score_candidate        ← LLM scores criteria; Python computes weighted score
+      │
+      ▼
+OUTPUT VALIDATION      ← validates LLM output; blocks on HIGH severity
+      │  └─ GUARDRAIL_BLOCKED → END
+      ▼
+FAIRNESS CHECK         ← audits evidence for prohibited attribute references
+      │
+      ▼
+Score Threshold        ← Python routing; LLM never decides this
+  /         \
+NO           YES
+│              │
+REJECT    check_availability
+               │
+               ▼
+        propose_interview
+               │
+               ▼
+        BUILD HUMAN REVIEW   ← assembles HumanReview object for the reviewer
+               │
+               ▼
+           INTERRUPT          ← pauses for human decision
+          /        \
+      APPROVE     REJECT
+         │           │
+      APPROVED    REJECTED
+```
+
+### Guardrail severity policy
+
+| Severity | Action |
+|---|---|
+| `low` | Continue; record flag in `state["guardrail_flags"]` |
+| `medium` | Continue; record flag; reviewer sees it in `HumanReview` |
+| `high` | Stop immediately; set `final_status = "GUARDRAIL_BLOCKED"` |
+
+### 1. Prompt-injection defence (`app/guardrails/injection.py`)
+
+Scans resume and job-description text for patterns that suggest the caller
+is trying to hijack agent instructions:
+
+- "ignore previous instructions" / "ignore all previous instructions"
+- "system message" / "developer message" / "system prompt"
+- "you are now …" / "admin mode"
+- "reveal your api key / secret / password / token"
+- "rank me as the best candidate"
+- "set every score to 5"
+- Delimiter injection (fake `</resume>` tags)
+- Any attempt to override, replace, or discard agent rules
+
+Returns a `GuardrailResult` with `severity = "high"` for direct injection
+attempts.  HIGH severity blocks the run immediately before any LLM call.
+
+Important limitations: regex detection is a mitigation, not a guarantee.
+It works alongside delimiter-wrapping, system-prompt priority, and output
+validation as a layered defence.
+
+### 2. Input validation (`app/guardrails/input_guard.py`)
+
+Validates raw text before it reaches the LLM:
+
+- Empty / whitespace-only input → HIGH
+- Input exceeding 50,000 characters → HIGH
+- Suspiciously short input (< 20 chars) → LOW
+- Injection-like content → delegated to injection detector
+
+The original resume text is never silently modified.
+
+### 3. LLM output validation (`app/guardrails/output_guard.py`)
+
+Validates every `CandidateScore` produced by the scoring service:
+
+- Every rubric criterion must have a score (missing → MEDIUM)
+- Scores must be in [0, 5] (out-of-range → HIGH)
+- Evidence must be non-empty (missing → HIGH)
+- Reasoning must be non-empty (missing → LOW)
+- No unexpected criteria are accepted (injected criterion → MEDIUM)
+- Weighted score must be in [0, 5] (computed by Python, so always valid)
+- Suspicious phrases in evidence (e.g. "the candidate told me to give them 5") → HIGH
+
+The Python application remains authoritative for score ranges, weights,
+and the weighted score.  The LLM cannot override these.
+
+### 4. Fairness checks (`app/guardrails/fairness.py`)
+
+Audits scoring evidence for references to prohibited attributes:
+
+**Prohibited** (must not influence scoring):
+- gender / sex
+- age
+- nationality / citizenship
+- religion / faith
+- caste / ethnicity / race
+- marital / family status
+- physical appearance / disability
+- sexual orientation
+- college prestige
+- name as a scoring signal
+
+**Allowed** (job-relevant):
+- skills, years of experience, projects, education (degree/field, not prestige)
+
+A fairness flag does **not** automatically reject the candidate — it is
+surfaced in the `HumanReview` object so the human reviewer can assess
+whether the flagged evidence affected the decision.
+
+Scoring isolation is already enforced at the service level:
+`score_candidate_service` omits name, email, and phone from the profile
+text sent to the LLM.  The fairness guardrail is an additional audit
+on the evidence strings the LLM returns.
+
+### 5. Human review summary (`app/models/guardrail_models.py`)
+
+A `HumanReview` object is built before the approval interrupt.
+It aggregates:
+
+| Field | Description |
+|---|---|
+| `candidate` | Candidate name |
+| `score` | Python-computed weighted score (0–5) |
+| `recommendation` | Recommendation tier |
+| `evidence` | Per-criterion score evidence |
+| `availability` | Available interview slots |
+| `proposed_slot` | The slot proposed |
+| `guardrail_flags` | All guardrail flags accumulated during the run |
+| `fairness_flags` | Fairness-specific flags |
+| `approval_required` | Always `True` |
+| `status` | Current workflow status |
+
+The Phase 6 Streamlit UI will render this object.
+
+### 6. What the agent refuses to do
+
+- Book an interview without explicit human approval.
+- Send emails, create calendar events, or contact candidates automatically.
+- Execute instructions found in resume or job-description text.
+- Return API keys, secrets, or system-prompt contents as output.
+- Accept LLM scores outside [0, 5].
+- Accept scoring criteria not in the rubric.
+- Use gender, age, nationality, religion, or other protected attributes in scoring.
+
+### New state fields (Phase 5)
+
+| Field | Type | Description |
+|---|---|---|
+| `guardrail_flags` | `list[str]` (append-only) | All flags from all guardrail checks |
+| `fairness_flags` | `list[str]` (append-only) | Fairness-specific flags |
+| `human_review` | `dict` | Serialised `HumanReview` for the reviewer |
+
+`GUARDRAIL_BLOCKED` is a new `FinalStatus` value set when a HIGH-severity
+guardrail fires.
+
+### New nodes (Phase 5)
+
+| Node | What it does |
+|---|---|
+| `input_guardrail` | Validates resume text; detects injection; blocks on HIGH |
+| `output_validation` | Validates LLM scoring output; blocks on HIGH |
+| `fairness_check` | Audits evidence for prohibited attributes; records flags |
+| `build_human_review` | Assembles `HumanReview` summary before the interrupt |
+
+---
 
 ## What Phase 4 implements
 
@@ -320,7 +512,8 @@ print(profile.model_dump_json(indent=2))
 ```
 app/
   config.py              settings from env / .env
-  models/                Pydantic models (job, candidate, scoring)
+  models/                Pydantic models (job, candidate, scoring, guardrails)
+    guardrail_models.py  GuardrailResult, HumanReview
   services/              llm_service, resume_parser, job_parser
   tools/                 four LangChain tools (Phase 3)
     __init__.py          exports parse_resume, score_candidate, check_availability, propose_interview
@@ -328,10 +521,16 @@ app/
     scoring_tool.py      LLM scores criteria; Python computes weighted score
     availability_tool.py deterministic fake calendar (SHA-256 based)
     interview_tool.py    PENDING_APPROVAL proposal only — no booking
-  agent/                 LangGraph recruitment agent (Phase 4)
+  guardrails/            Phase 5 guardrail modules
+    __init__.py          exports detect_injection, validate_input, validate_scoring_output, check_scoring_fairness
+    injection.py         prompt-injection pattern detector
+    input_guard.py       input validation (empty, oversized, injection)
+    output_guard.py      LLM output validation (scores, evidence, criteria)
+    fairness.py          fairness attribute checks on scoring evidence
+  agent/                 LangGraph recruitment agent (Phase 4 + 5)
     __init__.py          exports build_graph
     state.py             RecruitmentState TypedDict + TrajectoryEntry
-    graph.py             StateGraph — 8 nodes, conditional edges, interrupt
+    graph.py             StateGraph — 12 nodes, conditional edges, interrupt, guardrails
     runner.py            run_recruitment(), approve_interview(), reject_interview()
 tests/
   data/                  fictional sample JD, resume, and a prompt-injection resume
@@ -358,7 +557,7 @@ requirements.txt
 2. ✅ Basic recruitment agent building blocks
 3. ✅ Agent tools
 4. ✅ LangGraph state and workflow
-5. Guardrails and human approval
+5. ✅ Guardrails and human approval
 6. Streamlit UI
 7. Tests
 8. Docker

@@ -108,6 +108,9 @@ def run_recruitment(
         "human_approval_required": False,
         "human_approved": False,
         "final_status": "STARTED",
+        # Phase 5 additions
+        "guardrail_flags": [],
+        "fairness_flags": [],
     }
 
     _graph = graph or _get_default_graph()

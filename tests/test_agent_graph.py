@@ -138,6 +138,9 @@ def _initial_state(resume: str = "dummy resume text") -> RecruitmentState:
         "human_approval_required": False,
         "human_approved": False,
         "final_status": "STARTED",
+        # Phase 5 additions
+        "guardrail_flags": [],
+        "fairness_flags": [],
     }
 
 
