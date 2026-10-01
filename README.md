@@ -4,7 +4,153 @@ An AI-powered recruitment agent (LangGraph + OpenRouter) that parses a job descr
 scores candidates against a JD-based rubric with evidence, ranks them, and proposes interviews —
 **always behind a human approval gate**.
 
-> Status: **Phase 3 — recruitment agent tools.** No autonomous agent loop yet.
+> Status: **Phase 4 — LangGraph agent.** Human-in-the-loop interview approval implemented.
+
+## What Phase 4 implements
+
+A LangGraph `StateGraph` that orchestrates the Phase 3 tools into a resumable, auditable
+recruitment workflow with a mandatory human approval gate.
+
+### Architecture
+
+```
+Resume + JD + Rubric
+        │
+        ▼
+  LangGraph State (RecruitmentState)
+        │
+        ▼
+   parse_resume          ← calls parse_resume_service (Phase 3 tool)
+        │
+        ▼
+  score_candidate        ← calls score_candidate_service (Python-weighted score)
+        │
+        ▼
+  route_on_score ─── score < threshold ──► reject_by_threshold ──► END
+        │                                  (REJECTED_BY_THRESHOLD)
+        ▼ score ≥ threshold
+ check_availability      ← calls check_availability_service (deterministic fake calendar)
+        │
+        ▼
+ propose_interview        ← calls propose_interview_service (PENDING_APPROVAL proposal)
+        │
+        ▼
+ human_approval_gate      ← interrupt() — pauses here for human input
+        │
+   ┌────┴────┐
+  APPROVE   REJECT
+   │           │
+   ▼           ▼
+finalise_    finalise_
+approval     rejection
+   │           │
+  END         END
+(APPROVED)  (REJECTED)
+```
+
+### State (`app/agent/state.py`)
+
+`RecruitmentState` is a TypedDict carrying:
+
+| Field | Type | Description |
+|---|---|---|
+| `resume_text` | `str` | Raw resume input |
+| `job_description` | `str` | Job description (informational) |
+| `candidate_profile` | `dict` | Serialised `CandidateProfile` |
+| `rubric` | `list[dict]` | Serialised `ScoringCriterion` list |
+| `candidate_score` | `dict` | Serialised `CandidateScore` |
+| `availability` | `dict` | Serialised `AvailabilityResult` |
+| `interview_proposal` | `dict` | Serialised `InterviewProposal` |
+| `interview_week` | `str` | ISO week string, e.g. `"2026-W41"` |
+| `current_step` | `int` | Monotonic iteration counter |
+| `errors` | `list[str]` | Append-only error log |
+| `human_approval_required` | `bool` | Set when the graph reaches the gate |
+| `human_approved` | `bool` | Set by the human response |
+| `final_status` | `FinalStatus` | Last known workflow status |
+| `trajectory` | `list[TrajectoryEntry]` | Append-only audit log |
+
+`errors` and `trajectory` use `Annotated[list, operator.add]` so LangGraph
+appends entries rather than overwriting them.
+
+### Nodes and edges
+
+| Node | What it does |
+|---|---|
+| `parse_resume` | Calls `parse_resume_service`; writes `candidate_profile` |
+| `score_candidate` | Calls `score_candidate_service`; writes `candidate_score` |
+| `reject_by_threshold` | Terminal node for low-scoring candidates |
+| `check_availability` | Calls `check_availability_service`; writes `availability` |
+| `propose_interview` | Calls `propose_interview_service`; writes `interview_proposal` |
+| `human_approval_gate` | Calls `interrupt()` — pauses the graph |
+| `finalise_approval` | Sets `final_status = "APPROVED"` |
+| `finalise_rejection` | Sets `final_status = "REJECTED"` |
+
+Conditional edges:
+- After `score_candidate`: Python compares `weighted_score` to `score_threshold` — the LLM never decides this.
+- After `human_approval_gate`: routes on `state["human_approved"]`.
+
+### Checkpointer and resumability
+
+`MemorySaver` (in-memory) is used as the LangGraph checkpointer so the workflow
+can be interrupted and resumed within a process:
+
+```python
+from app.agent.runner import run_recruitment, approve_interview, reject_interview
+
+# 1. Start the run — graph pauses at the approval gate.
+thread_id, state = run_recruitment(resume_text, rubric)
+assert state["final_status"] == "PENDING_APPROVAL"
+
+# 2a. Human approves.
+final = approve_interview(thread_id)
+assert final["final_status"] == "APPROVED"
+
+# 2b. Or human rejects.
+final = reject_interview(thread_id)
+assert final["final_status"] == "REJECTED"
+```
+
+### Human-in-the-loop
+
+The `human_approval_gate` node calls `interrupt()` from `langgraph.types`.
+LangGraph raises `NodeInterrupt` internally, serialises the state to the
+checkpointer, and returns control to the caller.  The caller then passes
+`Command(resume="approve")` or `Command(resume="reject")` on the next invoke.
+
+No emails are sent and no calendar events are created at any point — the
+`propose_interview` tool only ever creates a `PENDING_APPROVAL` proposal.
+
+### Iteration limit
+
+`AGENT_MAX_ITERATIONS` (default 10, configurable) is passed into `build_graph()`.
+Every node increments `current_step` and checks it against the limit before
+doing any work.  If the limit is exceeded the node writes `final_status = "FAILED"`
+and the graph routes to END without raising.
+
+### Trajectory
+
+Every node appends `TrajectoryEntry` dicts to `state["trajectory"]`:
+
+```json
+[
+  {"step": 1, "node": "parse_resume",   "status": "entered"},
+  {"step": 1, "node": "parse_resume",   "status": "completed", "detail": "name=Alex Rivera"},
+  {"step": 2, "node": "score_candidate","status": "completed", "detail": "weighted_score=4.7"},
+  {"step": 4, "node": "propose_interview", "status": "completed", "detail": "slot=Tuesday 14:00"},
+  {"step": 5, "node": "human_approval_gate", "status": "interrupted"},
+  {"step": 5, "node": "human_approval_gate", "status": "resumed", "detail": "decision='approve'"},
+  {"step": 6, "node": "finalise_approval", "status": "completed"}
+]
+```
+
+Only operational/audit information is stored — no LLM chain-of-thought.
+
+### Final status values
+
+`STARTED` → `PARSED` → `SCORED` → `REJECTED_BY_THRESHOLD` / `AVAILABILITY_CHECKED`
+→ `PENDING_APPROVAL` → `APPROVED` / `REJECTED` / `FAILED`
+
+---
 
 ## What Phase 3 implements
 
@@ -182,6 +328,11 @@ app/
     scoring_tool.py      LLM scores criteria; Python computes weighted score
     availability_tool.py deterministic fake calendar (SHA-256 based)
     interview_tool.py    PENDING_APPROVAL proposal only — no booking
+  agent/                 LangGraph recruitment agent (Phase 4)
+    __init__.py          exports build_graph
+    state.py             RecruitmentState TypedDict + TrajectoryEntry
+    graph.py             StateGraph — 8 nodes, conditional edges, interrupt
+    runner.py            run_recruitment(), approve_interview(), reject_interview()
 tests/
   data/                  fictional sample JD, resume, and a prompt-injection resume
   conftest.py            FakeLLMService + fixtures
@@ -206,7 +357,7 @@ requirements.txt
 1. ✅ Project foundation
 2. ✅ Basic recruitment agent building blocks
 3. ✅ Agent tools
-4. LangGraph state and workflow
+4. ✅ LangGraph state and workflow
 5. Guardrails and human approval
 6. Streamlit UI
 7. Tests
