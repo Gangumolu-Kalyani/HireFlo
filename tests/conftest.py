@@ -30,3 +30,8 @@ def sample_resume() -> str:
 @pytest.fixture
 def sample_job() -> str:
     return (DATA_DIR / "sample_job.txt").read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def malicious_resume() -> str:
+    return (DATA_DIR / "malicious_resume.txt").read_text(encoding="utf-8")

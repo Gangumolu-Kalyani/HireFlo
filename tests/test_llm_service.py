@@ -2,6 +2,7 @@
 
 import pytest
 from langchain_openai import ChatOpenAI
+from pydantic import ValidationError
 
 from app.config import Settings
 from app.models import CandidateProfile
@@ -61,3 +62,15 @@ def test_wrong_output_type_raises():
     stub = StubChatModel({"name": "not a model"})
     with pytest.raises(LLMError):
         _service(chat_model=stub).structured_call("s", "u", CandidateProfile)
+
+
+def test_invalid_llm_output_is_wrapped():
+    # Simulates the LLM omitting the required `name` field.
+    try:
+        CandidateProfile(skills=["Python"])
+    except ValidationError as exc:
+        validation_error = exc
+    with pytest.raises(LLMError):
+        _service(chat_model=StubChatModel(validation_error)).structured_call(
+            "s", "u", CandidateProfile
+        )

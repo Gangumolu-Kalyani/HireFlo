@@ -33,11 +33,19 @@ class TestCandidateProfile:
     def test_valid_email_kept(self):
         assert CandidateProfile(name="A", email=" a@example.com ").email == "a@example.com"
 
+    @pytest.mark.parametrize("good", ["+1 555 010 2233", "(555) 010-2233", "5550102233"])
+    def test_valid_phone_kept(self, good):
+        assert CandidateProfile(name="A", phone=good).phone == good
+
+    @pytest.mark.parametrize("bad", ["N/A", "", "call me", "123"])
+    def test_invalid_phone_becomes_none(self, bad):
+        assert CandidateProfile(name="A", phone=bad).phone is None
+
 
 class TestJobDescription:
     def test_minimal_job(self):
         j = JobDescription(title="Engineer")
-        assert j.required_skills == [] and j.minimum_experience is None
+        assert j.required_skills == [] and j.minimum_experience == 0
 
     def test_title_required(self):
         with pytest.raises(ValidationError):
@@ -54,6 +62,9 @@ class TestScoring:
             ScoreEvidence(criterion="Python", score=6, evidence="x")
         with pytest.raises(ValidationError):
             ScoreEvidence(criterion="Python", score=-1, evidence="x")
+
+    def test_fractional_score_allowed(self):
+        assert ScoreEvidence(criterion="Python", score=3.5, evidence="x").score == 3.5
 
     def test_score_requires_evidence(self):
         with pytest.raises(ValidationError):

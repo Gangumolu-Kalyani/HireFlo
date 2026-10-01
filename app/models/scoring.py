@@ -15,7 +15,7 @@ class ScoringCriterion(BaseModel):
 
 class ScoreEvidence(BaseModel):
     criterion: str = Field(min_length=1)
-    score: int = Field(ge=0, le=5)
+    score: float = Field(ge=0, le=5)
     # Every score must be backed by resume evidence - empty evidence is rejected.
     evidence: str = Field(min_length=1, description="Quote or fact taken from the resume")
     reasoning: str = ""

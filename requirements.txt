@@ -1,8 +1,12 @@
-# Phase 1 - foundation. More deps (langgraph, langchain, streamlit) are added in later phases.
+# More deps (langgraph, streamlit) are added in later phases.
 
 # Config / data validation
 pydantic==2.13.5
 pydantic-settings==2.15.0
+
+# LLM access (OpenRouter is OpenAI-compatible, so ChatOpenAI talks to it directly)
+langchain-core==1.6.6
+langchain-openai==1.6.7
 
 # Dev / test
 pytest==9.1.1
