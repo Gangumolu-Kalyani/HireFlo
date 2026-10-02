@@ -9,6 +9,9 @@ langchain-openai==1.6.7
 # Agent orchestration (Phase 4)
 langgraph==1.2.12
 
+# Streamlit UI (Phase 6)
+streamlit==1.45.1
+
 # Dev / test
 pytest==9.1.1
 ruff==0.16.9

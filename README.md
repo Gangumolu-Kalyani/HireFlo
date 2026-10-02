@@ -4,7 +4,166 @@ An AI-powered recruitment agent (LangGraph + OpenRouter) that parses a job descr
 scores candidates against a JD-based rubric with evidence, ranks them, and proposes interviews —
 **always behind a human approval gate**.
 
-> Status: **Phase 5 — Guardrails, security, fairness & human review implemented.**
+> Status: **Phase 6 — Streamlit Human Review UI implemented.**
+
+## What Phase 6 implements
+
+A Streamlit web interface that gives an HR reviewer a complete dashboard for
+the Phase 4/5 recruitment workflow — from resume input through to interview
+approval or rejection.
+
+### Architecture
+
+```
+                    Streamlit UI
+                         │
+                         ▼
+                 LangGraph Agent
+                         │
+              ┌──────────┴──────────┐
+              ↓                     ↓
+         Guardrails              Tools
+              │                     │
+              └──────────┬──────────┘
+                         ↓
+                   Human Review
+                         │
+                    APPROVE/REJECT
+```
+
+The Streamlit layer is a **presentation / controller** layer only.  All
+recruitment logic — LLM calls, scoring, guardrails, LangGraph nodes — lives in
+the Phase 4/5 backend.  The UI calls `run_recruitment()`, `approve_interview()`,
+and `reject_interview()` from `app.agent.runner`.
+
+### How to start the UI
+
+```bash
+# Activate your virtual environment first
+source .venv/bin/activate
+
+# Install dependencies (streamlit is now in requirements.txt)
+pip install -r requirements.txt
+
+# Set your OpenRouter API key in .env
+cp .env.example .env
+nano .env   # set OPENROUTER_API_KEY=sk-or-...
+
+# Launch the dashboard
+streamlit run app/ui/streamlit_app.py
+```
+
+The UI opens at `http://localhost:8501` in your browser.
+
+### Resume input
+
+The HR user can either:
+
+- **Paste resume text** directly into the text area, or
+- **Upload a `.txt` or `.pdf` file** — the UI extracts the text and passes it
+  to the recruitment workflow.
+
+All uploaded content is treated as **untrusted data** — the Phase 5 input
+guardrail runs before any LLM call.
+
+### Job description input
+
+A text area accepts the full job description.  Empty input is rejected before
+evaluation starts.
+
+### Candidate evaluation
+
+Clicking **Start Candidate Evaluation** calls `run_recruitment()`.  The graph:
+
+1. Validates resume text (injection detector + input guard)
+2. Parses the resume → `CandidateProfile`
+3. Scores the candidate against the rubric → `CandidateScore`
+4. Validates LLM output (output guard)
+5. Checks evidence for fairness flags
+6. Routes on score threshold (≥ 3.0 continues, < 3.0 → `REJECTED_BY_THRESHOLD`)
+7. Checks availability and proposes an interview slot
+8. Pauses at `human_approval_gate` → `PENDING_APPROVAL`
+
+The thread ID and workflow state are stored in `st.session_state`.
+
+### Score display
+
+The dashboard shows:
+
+- Overall weighted score (`0–5`) as a metric and progress bar
+- Recommendation tier (`STRONG MATCH`, `MATCH`, `BORDERLINE`, `NOT RECOMMENDED`)
+- Per-criterion evidence in expandable panels (score, resume quote, reasoning)
+
+### Guardrail display
+
+Security and fairness results are displayed with colour-coded badges:
+
+| Outcome | Component | Display |
+|---|---|---|
+| Passed | `st.success()` | ✅ PASSED |
+| Warning / medium flag | `st.warning()` | ⚠️ FLAGGED |
+| Blocked (HIGH severity) | `st.error()` | 🛡️ BLOCKED |
+
+If `final_status == "GUARDRAIL_BLOCKED"` the page shows a full banner
+explaining that evaluation was stopped, which flags fired, and what to do.
+No system prompts, API keys, or stack traces are shown to the HR user.
+
+Fairness flags prompt the reviewer to check whether any protected attributes
+influenced the recommendation before approving.
+
+### Human approval
+
+When `final_status == "PENDING_APPROVAL"`:
+
+- The full `HumanReview` object is displayed: candidate, score, recommendation,
+  criterion evidence, available slots, proposed slot, guardrail flags.
+- Two buttons appear:
+  - **✅ APPROVE INTERVIEW** → calls `approve_interview(thread_id)` → `APPROVED`
+  - **🚫 REJECT INTERVIEW** → calls `reject_interview(thread_id)` → `REJECTED`
+- After the decision the UI refreshes and shows the final status.
+
+No email is sent. No calendar event is created. The proposal is
+`PENDING_APPROVAL` until the reviewer acts.
+
+### Rejection
+
+If the reviewer clicks **REJECT INTERVIEW**, `reject_interview(thread_id)` is
+called and the graph sets `final_status = "REJECTED"`.  The UI shows:
+
+```
+🚫 Interview Rejected
+```
+
+### Audit trail
+
+An expandable **Audit Trail** section shows every operational step from
+`state["trajectory"]`:
+
+```
+1. ▶️  Step 1 — input_guardrail — COMPLETED
+2. ✅  Step 2 — parse_resume — COMPLETED  (name=Alex Rivera)
+3. ✅  Step 3 — score_candidate — COMPLETED  (weighted_score=4.2)
+4. ✅  Step 4 — output_validation — COMPLETED
+5. ✅  Step 5 — fairness_check — COMPLETED
+6. ✅  Step 6 — check_availability — COMPLETED
+7. ✅  Step 7 — propose_interview — COMPLETED  (slot=Tuesday 14:00)
+8. ⏸️  Step 8 — human_approval_gate — INTERRUPTED
+```
+
+No LLM chain-of-thought or internal reasoning is ever shown.
+
+### Workflow states handled
+
+| Status | UI behaviour |
+|---|---|
+| `PENDING_APPROVAL` | Shows HumanReview, APPROVE and REJECT buttons |
+| `APPROVED` | Shows ✅ Interview Approved banner, no buttons |
+| `REJECTED` | Shows 🚫 Interview Rejected banner, no buttons |
+| `REJECTED_BY_THRESHOLD` | Shows score, no approval buttons |
+| `GUARDRAIL_BLOCKED` | Shows security banner, flags, no approval |
+| `FAILED` | Shows safe error message, no approval |
+
+---
 
 ## What Phase 5 implements
 
@@ -532,10 +691,14 @@ app/
     state.py             RecruitmentState TypedDict + TrajectoryEntry
     graph.py             StateGraph — 12 nodes, conditional edges, interrupt, guardrails
     runner.py            run_recruitment(), approve_interview(), reject_interview()
+  ui/                    Streamlit HR dashboard (Phase 6)
+    __init__.py
+    streamlit_app.py     main entry point — presentation/controller layer only
 tests/
   data/                  fictional sample JD, resume, and a prompt-injection resume
   conftest.py            FakeLLMService + fixtures
   test_*.py
+  test_ui.py             UI-focused tests (15 test classes, no real LLM)
 .env.example             environment variable template
 requirements.txt
 ```
@@ -558,7 +721,7 @@ requirements.txt
 3. ✅ Agent tools
 4. ✅ LangGraph state and workflow
 5. ✅ Guardrails and human approval
-6. Streamlit UI
+6. ✅ Streamlit UI
 7. Tests
 8. Docker
 9. GitHub Actions CI
