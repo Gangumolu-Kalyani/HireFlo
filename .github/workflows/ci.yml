@@ -1,28 +1,53 @@
 # ============================================================
-# HireFlo — GitHub Actions CI
+# HireFlo — GitHub Actions CI + GHCR publish
 # ============================================================
 #
-# Stages
-# ------
+# Jobs
+# ----
 # 1. lint     — ruff check .
 # 2. test     — pytest -v  (424 tests, no real LLM calls)
-# 3. docker   — docker build -t hireflo:ci .
+# 3. docker   — build, smoke-test, and (conditionally) push to GHCR
 #
-# Triggers
+# Push behaviour
+# --------------
+# push to main branch  → build + smoke test + push to GHCR
+#                        tags: latest, <commit-sha>
+# push of a v* tag     → build + smoke test + push to GHCR
+#                        tags: <version>, latest, <commit-sha>
+# pull_request         → build + smoke test only (NO push)
+#
+# Registry
 # --------
-# Every push and pull_request on any branch.
+# ghcr.io/<owner>/hireflo
+# The owner is resolved dynamically from github.repository_owner
+# so the workflow works for any fork without hardcoding a username.
+#
+# Authentication
+# --------------
+# Uses the auto-generated GITHUB_TOKEN (no PAT required).
+# permissions.packages: write is set at the workflow level.
 #
 # Secrets
 # -------
-# No secrets are required for lint / test / build.
-# OPENROUTER_API_KEY is NOT needed — all tests use a fake LLM.
+# No application secrets required for lint / test / build.
+# OPENROUTER_API_KEY is NOT needed — all 424 tests use a fake LLM.
+# GITHUB_TOKEN is provided automatically by GitHub Actions.
 # ============================================================
 
 name: CI
 
 on:
   push:
+    branches:
+      - main
+    tags:
+      - "v*"          # trigger on version tags, e.g. v1.0.0
   pull_request:
+
+# Minimal permissions — read source, write packages (GHCR).
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   # ── 1. Lint ────────────────────────────────────────────────────────────────
@@ -81,14 +106,14 @@ jobs:
       - name: Run pytest
         run: pytest -v
         env:
-          # Ensure tests run in test mode and never attempt real LLM calls.
+          # Ensure tests run in offline test mode — no real LLM calls.
           APP_ENV: test
 
-  # ── 3. Docker build ────────────────────────────────────────────────────────
+  # ── 3. Docker build + push ─────────────────────────────────────────────────
   docker:
-    name: Docker build
+    name: Docker build & push
     runs-on: ubuntu-latest
-    # Only build after lint and tests both pass.
+    # Only run after both lint and tests pass.
     needs: [lint, test]
 
     steps:
@@ -98,20 +123,70 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image
+      # ── Generate OCI-compliant image tags and labels ──────────────────────
+      # docker/metadata-action reads the triggering event and produces:
+      #   push to main      → :latest, :<sha-short>
+      #   push of v* tag    → :<version>, :latest, :<sha-short>
+      #   pull_request       → :<pr-N>  (used for build only, not pushed)
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/hireflo
+          tags: |
+            # semver from git tag (v1.2.3 → 1.2.3, also adds :latest)
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # short SHA — immutable reference to the exact source commit
+            type=sha,prefix=sha-
+            # "latest" on every push to main
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          labels: |
+            org.opencontainers.image.title=HireFlo
+            org.opencontainers.image.description=AI Recruitment Agent — LangGraph + Streamlit
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      # ── Log in to GHCR (skipped for pull requests from forks) ─────────────
+      # GITHUB_TOKEN is provided automatically — no PAT required.
+      # login-action is skipped on PRs from external forks because the token
+      # does not have write permission in that context.
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Build (and push when not a PR) ────────────────────────────────────
+      - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: false          # Phase 7: build only, no registry push
-          tags: hireflo:ci
-          # Use GitHub Actions cache to speed up repeated builds.
+          # Push only on push events (main branch or version tags).
+          # pull_request events never push to the registry.
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Reuse GitHub Actions layer cache to speed up repeated builds.
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # ── Smoke test (always — build + PR + push) ────────────────────────────
+      # Load the image locally regardless of push status so we can smoke-test it.
+      - name: Load image locally for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true          # load into the local Docker daemon for the next step
+          push: false
+          tags: hireflo:ci
+          cache-from: type=gha
+
       - name: Smoke-test container
         run: |
-          # Start the container without a real API key — Streamlit should
-          # still start and expose the health endpoint before any LLM call.
           docker run -d \
             --name hireflo-smoke \
             -p 8501:8501 \
@@ -119,7 +194,6 @@ jobs:
             -e OPENROUTER_API_KEY=dummy \
             hireflo:ci
 
-          # Wait up to 30 s for the health endpoint to respond.
           echo "Waiting for Streamlit health endpoint..."
           for i in $(seq 1 10); do
             if curl -sf http://localhost:8501/_stcore/health; then
@@ -131,9 +205,16 @@ jobs:
             sleep 3
           done
 
-          # Capture final health check result and stop the container.
           curl -sf http://localhost:8501/_stcore/health || \
             (echo "❌  Streamlit health check failed" && docker logs hireflo-smoke && exit 1)
 
           docker stop hireflo-smoke
           docker rm hireflo-smoke
+
+      # ── Report published digest ────────────────────────────────────────────
+      - name: Report image digest
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "✅ Image pushed to GHCR"
+          echo "   Tags : ${{ steps.meta.outputs.tags }}"
+          echo "   Digest: ${{ steps.build.outputs.digest }}"

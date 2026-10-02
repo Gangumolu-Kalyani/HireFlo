@@ -26,7 +26,7 @@ FROM python:3.12-slim
 # ── Build-time metadata ───────────────────────────────────────────────────────
 LABEL org.opencontainers.image.title="HireFlo"
 LABEL org.opencontainers.image.description="AI Recruitment Agent — LangGraph + Streamlit"
-LABEL org.opencontainers.image.source="https://github.com/your-org/hireflo"
+LABEL org.opencontainers.image.source="https://github.com/Gangumolu-Kalyani/HireFlo"
 
 # ── System dependencies ───────────────────────────────────────────────────────
 # curl is needed for the HEALTHCHECK only.
