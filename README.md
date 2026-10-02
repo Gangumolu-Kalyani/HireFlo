@@ -4,7 +4,286 @@ An AI-powered recruitment agent (LangGraph + OpenRouter) that parses a job descr
 scores candidates against a JD-based rubric with evidence, ranks them, and proposes interviews —
 **always behind a human approval gate**.
 
-> Status: **Phase 8 — Container Registry: GHCR image publishing implemented.**
+> Status: **Phase 9 — Render Deployment: CD pipeline to production implemented.**
+
+## What Phase 9 implements
+
+Phase 9 closes the continuous-delivery loop: every successful push to `main`
+automatically triggers a Render deployment with the exact immutable SHA image
+that was just published to GHCR.
+
+```
+                    Developer
+                        │
+                        ▼
+                    GitHub
+                        │
+                        ▼
+              ┌──────────────────┐
+              │ GitHub Actions   │
+              │                  │
+              │  CI              │
+              │  ──────────────  │
+              │  Ruff            │
+              │  Pytest          │
+              │  Docker Build    │
+              │  Smoke Test      │
+              └────────┬─────────┘
+                       │ PASS
+                       ▼
+              ┌──────────────────┐
+              │      GHCR        │
+              │ Docker Registry  │
+              │                  │
+              │  :latest         │
+              │  :sha-<commit>   │
+              └────────┬─────────┘
+                       │ deploy hook
+                       ▼
+              ┌──────────────────┐
+              │      Render      │
+              │                  │
+              │ Docker Container │
+              │ Streamlit        │
+              └────────┬─────────┘
+                       │
+                       ▼
+                  🌐 HireFlo
+                  HTTPS
+```
+
+### CI vs CD vs Registry
+
+| Layer | Tool | What it does |
+|---|---|---|
+| CI | GitHub Actions | Lint, test, build, smoke-test on every push |
+| Container registry | GHCR | Stores versioned, immutable Docker images |
+| CD | Render | Pulls validated image and runs it as a web service |
+
+The CI pipeline validates code quality.  The registry is the handoff point.
+The CD layer deploys what was validated — nothing else.
+
+### Render service
+
+| Property | Value |
+|---|---|
+| Service type | Web Service (image-backed) |
+| Runtime | Docker (existing image) |
+| Image | `ghcr.io/gangumolu-kalyani/hireflo:sha-<commit>` |
+| Health check path | `/_stcore/health` |
+| Port | injected by Render via `$PORT` env var |
+| Application | Streamlit — `streamlit run app/ui/streamlit_app.py` |
+
+### Port handling
+
+Render injects a `$PORT` environment variable at runtime.  The Docker
+`CMD` in exec form does not support shell variable expansion, so Phase 9
+changes it to shell form:
+
+```dockerfile
+CMD python -m streamlit run app/ui/streamlit_app.py \
+    --server.address 0.0.0.0 \
+    --server.port ${PORT:-8501}
+```
+
+Locally, `$PORT` is not set so the default of `8501` is used.  On Render,
+`$PORT` is set and the container binds to Render's assigned port.  The
+application code is unchanged.
+
+### GHCR → Render: why a deploy hook
+
+Render does **not** automatically watch a private GHCR registry for new
+image pushes.  The supported mechanism for image-backed services is a
+**deploy hook** — a secret URL that triggers a new deploy when called.
+
+The GitHub Actions workflow calls the hook immediately after a successful
+GHCR push, passing the exact SHA tag:
+
+```
+https://api.render.com/deploy/srv-…?key=…&imgURL=ghcr.io%2F<owner>%2Fhireflo%3Asha-<short>
+```
+
+This means:
+- The deploy is always triggered by a new validated image, not on a schedule.
+- Render deploys the exact SHA tag, not whatever `:latest` resolves to at
+  pull time.  Deployments are fully reproducible.
+- If the GHCR push fails, the hook is never called and Render is never
+  triggered.
+
+### Image tag used for production
+
+Each push to `main` produces two tags:
+
+| Tag | Example | Used for |
+|---|---|---|
+| `latest` | `ghcr.io/…/hireflo:latest` | Convenience reference — mutable |
+| `sha-<short>` | `ghcr.io/…/hireflo:sha-b43fc5b` | Production deploy — immutable |
+
+Render receives the `sha-<short>` tag via the `imgURL` parameter.  This
+guarantees that a rollback always reproduces the exact image that was
+running, not a retagged `:latest`.
+
+### Automatic deployment flow
+
+```
+git push origin main
+      │
+      ▼
+GitHub Actions triggered
+      │
+      ├── lint (ruff check .)        ← FAIL stops everything
+      │
+      ├── test (pytest -v)           ← FAIL stops everything
+      │
+      └── docker job (needs lint + test)
+               │
+               ├── build + push to GHCR
+               │
+               ├── smoke test (/_stcore/health in CI container)
+               │
+               ├── report digest
+               │
+               └── call Render deploy hook
+                         │
+                         ▼
+                  Render pulls sha-<commit>
+                  from GHCR
+                         │
+                         ▼
+                  Container starts
+                         │
+                         ▼
+                  Render health check
+                  /_stcore/health → 200
+                         │
+                         ▼
+                  Deployment live
+```
+
+### Manual Render setup
+
+Render does not read `render.yaml` for image-backed services the same way
+it reads it for Git-backed services.  The following one-time steps must be
+completed in the Render Dashboard before the automated deploy hook works.
+
+**Step 1 — Create a GitHub PAT**
+
+1. Go to `https://github.com/settings/tokens` (classic tokens).
+2. Click **Generate new token (classic)**.
+3. Set a name (e.g. `render-ghcr-pull`), expiry (90 days), and tick the
+   `read:packages` scope only.
+4. Copy the token — you will not see it again.
+
+**Step 2 — Create the Render service**
+
+1. Go to `https://dashboard.render.com` and sign in (or create a free account).
+2. Click **+ New** → **Web Service**.
+3. Under **Source Code**, click **Existing Image**.
+4. Set **Image URL** to:
+   ```
+   ghcr.io/gangumolu-kalyani/hireflo:latest
+   ```
+5. Under **Credential**, click **Add credential**.
+6. Fill in:
+   - Registry: `ghcr.io`
+   - Username: `Gangumolu-Kalyani` (your GitHub username)
+   - Password: the PAT created in Step 1
+7. Click **Connect**.  Render verifies the credential.
+
+**Step 3 — Configure the service**
+
+| Setting | Value |
+|---|---|
+| Name | `hireflo` |
+| Region | Oregon (US West) or closest to you |
+| Instance type | Free (or Starter for no sleep) |
+| Health check path | `/_stcore/health` |
+
+**Step 4 — Set environment variables**
+
+In the service's **Environment** tab, add the following:
+
+| Key | Value | Notes |
+|---|---|---|
+| `OPENROUTER_API_KEY` | `sk-or-…` | Add as a **Secret** — never a plain var |
+| `APP_ENV` | `production` | Already in render.yaml |
+| `LLM_MODEL` | `anthropic/claude-sonnet-5.5` | Already in render.yaml |
+
+Do **not** set `PORT` — Render injects it automatically.
+
+**Step 5 — Get the deploy hook URL**
+
+1. Go to the service's **Settings** tab.
+2. Scroll to **Deploy Hook**.
+3. Copy the URL (it looks like
+   `https://api.render.com/deploy/srv-abc123?key=xyz`).
+
+**Step 6 — Add the deploy hook as a GitHub secret**
+
+1. Go to `https://github.com/Gangumolu-Kalyani/HireFlo/settings/secrets/actions`.
+2. Click **New repository secret**.
+3. Name: `RENDER_DEPLOY_HOOK_URL`
+4. Value: the deploy hook URL from Step 5.
+5. Click **Add secret**.
+
+From this point on, every push to `main` that passes CI will automatically
+deploy to Render.
+
+**Step 7 — Trigger the first deploy**
+
+The first deploy must be triggered manually (before the GitHub secret is
+set up) or by pushing a commit after the secret is in place:
+
+```bash
+git commit --allow-empty -m "chore: trigger initial Render deploy"
+git push origin main
+```
+
+Alternatively, click **Deploy latest commit** in the Render Dashboard.
+
+### Environment variables
+
+| Variable | Where set | Notes |
+|---|---|---|
+| `OPENROUTER_API_KEY` | Render Dashboard (secret) | Required for real LLM calls |
+| `APP_ENV` | render.yaml | Set to `production` |
+| `LOG_LEVEL` | render.yaml | `INFO` |
+| `OPENROUTER_BASE_URL` | render.yaml | OpenRouter endpoint |
+| `LLM_MODEL` | render.yaml | Model ID |
+| `AGENT_MAX_ITERATIONS` | render.yaml | Hard cap on agent loop |
+| `PORT` | Injected by Render | Do not set manually |
+| `STREAMLIT_SERVER_HEADLESS` | Dockerfile ENV | `true` |
+| `STREAMLIT_BROWSER_GATHER_USAGE_STATS` | Dockerfile ENV | `false` |
+
+### Security
+
+| Check | Status |
+|---|---|
+| `OPENROUTER_API_KEY` not in image | ✅ runtime-only via Render secret |
+| GHCR PAT not in source code | ✅ Render Dashboard credential only |
+| Deploy hook URL not in source | ✅ GitHub Actions secret only |
+| Container runs as non-root | ✅ `hireflo` user (uid 1000) |
+| Only port 8501 / `$PORT` exposed | ✅ no other ports |
+| No secrets printed in CI logs | ✅ hook URL passed via env var, not echoed |
+| `.env` gitignored | ✅ never committed |
+| Render blueprint has no secrets | ✅ render.yaml contains no secret values |
+
+### Rollback
+
+Because every production deploy uses an immutable SHA tag, rolling back is
+a single Render Dashboard click:
+
+1. Go to the service's **Deploys** tab.
+2. Find the last known-good deploy.
+3. Click **Rollback to this deploy**.
+
+Or trigger the previous image manually via the deploy hook:
+
+```bash
+curl "https://api.render.com/deploy/srv-…?key=…&imgURL=ghcr.io%2F<owner>%2Fhireflo%3Asha-<previous>"
+```
+
+---
 
 ## What Phase 8 implements
 
@@ -1182,5 +1461,5 @@ requirements.txt
 6. ✅ Streamlit UI
 7. ✅ Docker + GitHub Actions CI
 8. ✅ Container registry (GHCR)
-9. CD / deployment
+9. ✅ CD / deployment (Render)
 10. Monitoring / observability

@@ -1,0 +1,80 @@
+# ============================================================
+# HireFlo — Render Blueprint (render.yaml)
+# ============================================================
+#
+# Service type
+# ------------
+# image-backed Web Service — Render pulls a pre-built Docker image
+# from GHCR rather than building from source.
+#
+# Private registry credentials
+# ----------------------------
+# The GHCR package is private.  Credentials CANNOT be stored here.
+# They must be added manually in the Render Dashboard:
+#
+#   Dashboard → New Web Service → Existing Image
+#   → Credential → Add credential
+#
+#   Registry : ghcr.io
+#   Username : <your GitHub username>          (e.g. Gangumolu-Kalyani)
+#   Password : <GitHub PAT with read:packages scope>
+#
+# Secrets / environment variables
+# --------------------------------
+# OPENROUTER_API_KEY must be set in the Render Dashboard:
+#
+#   Service → Environment → Add Secret File  or  Add Environment Variable
+#   Key   : OPENROUTER_API_KEY
+#   Value : sk-or-...   (your real key — never commit this)
+#
+# Other variables below (APP_ENV, LOG_LEVEL, etc.) are safe to
+# include here because they contain no secrets.
+#
+# PORT
+# ----
+# Render injects $PORT automatically.  The Dockerfile CMD uses
+# ${PORT:-8501} so the container binds to Render's assigned port.
+# Do not set PORT here — Render owns it.
+#
+# Deploy hook
+# -----------
+# Render does NOT auto-watch GHCR for new images.
+# GitHub Actions triggers a deploy hook after each GHCR push.
+# The hook URL is stored in GitHub Secrets as RENDER_DEPLOY_HOOK_URL.
+# ============================================================
+
+services:
+  - type: web
+    name: hireflo
+    runtime: image
+
+    # ── Image ──────────────────────────────────────────────────────────────
+    # Replace <owner> with your GitHub username (e.g. gangumolu-kalyani).
+    # Render pulls this image tag when the service starts or is redeployed.
+    # The GitHub Actions deploy hook passes the exact SHA tag for each push.
+    image:
+      url: ghcr.io/gangumolu-kalyani/hireflo:latest
+      # credentials: must be configured in the Render Dashboard — cannot
+      # be stored in render.yaml.  See the comment block above.
+
+    # ── Health check ───────────────────────────────────────────────────────
+    # Render checks this path on the $PORT it assigns.
+    # Streamlit exposes /_stcore/health → HTTP 200 when ready.
+    healthCheckPath: /_stcore/health
+
+    # ── Environment variables ──────────────────────────────────────────────
+    # Non-secret config only.  Secrets (OPENROUTER_API_KEY) must be set
+    # in the Render Dashboard → Environment tab.
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      # OPENROUTER_API_KEY — set this in the Render Dashboard as a secret.
+      # Do NOT add it here.
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: LLM_MODEL
+        value: anthropic/claude-sonnet-5.5
+      - key: AGENT_MAX_ITERATIONS
+        value: "10"

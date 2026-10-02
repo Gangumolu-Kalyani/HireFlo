@@ -79,6 +79,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:8501/_stcore/health || exit 1
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-CMD ["python", "-m", "streamlit", "run", "app/ui/streamlit_app.py", \
-     "--server.address", "0.0.0.0", \
-     "--server.port", "8501"]
+# Shell form (not exec form) is required so that ${PORT:-8501} is expanded by
+# the shell at container startup.  Render injects a $PORT environment variable;
+# locally Docker uses the default of 8501.  Both cases work without any change
+# to the application code.
+CMD python -m streamlit run app/ui/streamlit_app.py \
+    --server.address 0.0.0.0 \
+    --server.port ${PORT:-8501}
