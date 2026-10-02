@@ -4,7 +4,273 @@ An AI-powered recruitment agent (LangGraph + OpenRouter) that parses a job descr
 scores candidates against a JD-based rubric with evidence, ranks them, and proposes interviews —
 **always behind a human approval gate**.
 
-> Status: **Phase 7 — DevOps Foundation: Docker + CI implemented.**
+> Status: **Phase 8 — Container Registry: GHCR image publishing implemented.**
+
+## What Phase 8 implements
+
+Phase 8 introduces a container registry so that every successful CI run on
+`main` (or a version tag) automatically publishes a versioned Docker image to
+**GitHub Container Registry (GHCR)**.  Pull requests build and test the image
+but never publish it — only validated, merged code reaches the registry.
+
+### Why a container registry
+
+Without a registry:
+- Images exist only on the machine that built them.
+- There is no reproducible way to deploy a specific version.
+- Teammates and automation have no shared source of truth for images.
+
+With GHCR:
+- Every pushed commit on `main` has a uniquely tagged, immutable image.
+- Release tags (`v1.0.0`) produce human-readable version images.
+- Any environment (laptop, CI, future CD) can pull the exact same image.
+- The registry is free for public packages and integrated with GitHub auth.
+
+### Why GitHub Container Registry (GHCR)
+
+| Criterion | GHCR |
+|---|---|
+| Free tier | Unlimited for public packages |
+| Auth | GitHub personal or `GITHUB_TOKEN` — no extra secret |
+| Integration | Native to GitHub Actions; same account, same permissions |
+| Namespace | `ghcr.io/<owner>/<repo>` — automatic, no extra config |
+| OCI compliance | Full OCI spec support |
+
+Docker Hub was **not** chosen (rate limits, separate account).
+AWS ECR was **not** chosen (no AWS dependency in this phase).
+
+### Architecture
+
+```
+                    GitHub
+                       │
+                       ▼
+                GitHub Actions
+                       │
+             ┌─────────┴─────────┐
+             ▼                   ▼
+           Ruff                Pytest
+             │                   │
+             └─────────┬─────────┘
+                       ▼
+                  Docker Build
+                       │
+                       ▼
+                GitHub Container
+                    Registry
+                       │
+              ┌────────┼────────┐
+              ▼        ▼        ▼
+           :latest   :sha-     :v1.0.0
+                     <sha>
+                       │
+                       ▼
+              Future Deployment
+```
+
+### Image naming convention
+
+```
+ghcr.io/<owner>/hireflo:<tag>
+```
+
+The owner is resolved dynamically from `github.repository_owner` — the
+workflow works on any fork without hardcoding a username.
+
+| Tag | Example | When created |
+|---|---|---|
+| `latest` | `ghcr.io/gangumolu-kalyani/hireflo:latest` | Every push to `main` |
+| `sha-<short>` | `ghcr.io/gangumolu-kalyani/hireflo:sha-3e879bb` | Every push to `main` and version tags |
+| `<version>` | `ghcr.io/gangumolu-kalyani/hireflo:v1.0.0` | Push of a `v*` git tag |
+| `<major>.<minor>` | `ghcr.io/gangumolu-kalyani/hireflo:1.0` | Push of a `v*` git tag |
+
+### Tag semantics
+
+**`latest`** — the most recent image built from the `main` branch.  Useful for
+development and demos.  Not guaranteed to be stable across pulls.
+
+**`sha-<commit>`** — an immutable reference.  The 7-character short SHA maps to
+a single, specific source commit.  If you need to reproduce a bug or roll back,
+use the SHA tag — it cannot be overwritten or moved.
+
+**`v1.0.0`** — a human-readable release version.  Created by pushing a git tag
+(`git tag v1.0.0 && git push origin v1.0.0`).  Suitable for deployment
+references in staging and production environments.
+
+### Branch and tag behavior
+
+| Event | Lint | Test | Build | Smoke test | Push to GHCR |
+|---|---|---|---|---|---|
+| Push to `main` | ✅ | ✅ | ✅ | ✅ | ✅ (`latest` + `sha-*`) |
+| Push of `v*` tag | ✅ | ✅ | ✅ | ✅ | ✅ (`v*` + `latest` + `sha-*`) |
+| Pull request | ✅ | ✅ | ✅ | ✅ | ❌ never |
+
+A pull request validates the image completely without publishing an unmerged
+image to the registry.  This prevents the `latest` tag from being polluted by
+work-in-progress code.
+
+### Authentication
+
+CI uses the **auto-generated `GITHUB_TOKEN`** — no personal access token (PAT)
+is needed.  The token is scoped with minimal permissions:
+
+```yaml
+permissions:
+  contents: read   # read source code
+  packages: write  # push to GHCR
+```
+
+The token is provided by GitHub automatically on every run.  It is never
+printed, logged, or echoed in any workflow step.
+
+### OCI image labels
+
+In addition to the static labels in the `Dockerfile`, `docker/metadata-action`
+injects the following labels at build time:
+
+| Label | Value |
+|---|---|
+| `org.opencontainers.image.title` | `HireFlo` |
+| `org.opencontainers.image.description` | AI Recruitment Agent — LangGraph + Streamlit |
+| `org.opencontainers.image.source` | `https://github.com/<owner>/HireFlo` |
+| `org.opencontainers.image.revision` | full 40-char git SHA |
+| `org.opencontainers.image.version` | version tag or branch ref |
+| `org.opencontainers.image.created` | ISO 8601 build timestamp |
+
+Every image is traceable back to the exact source commit that produced it.
+
+### CI/CD image flow
+
+```
+git push origin main
+      │
+      ▼
+GitHub Actions triggered
+      │
+      ├── lint job (ruff check .)
+      │        ↓ FAIL → pipeline stops, no image published
+      │        ↓ PASS
+      ├── test job (pytest -v)
+      │        ↓ FAIL → pipeline stops, no image published
+      │        ↓ PASS
+      └── docker job (needs: lint + test)
+               │
+               ├── docker/metadata-action  → tags + OCI labels
+               ├── docker/login-action     → GITHUB_TOKEN → GHCR
+               ├── docker/build-push-action → build + push
+               ├── local load + smoke test (curl /_stcore/health)
+               └── report digest
+```
+
+A failed Ruff check stops the pipeline.  A failed test stops the pipeline.  A
+failed Docker build stops the push.  The image is never published if any
+validation step fails.
+
+### Pulling an image from GHCR
+
+If the GHCR package is **private** (default for new packages linked to a
+private repository), authenticate first:
+
+```bash
+# Authenticate with a Personal Access Token (read:packages scope)
+echo <YOUR_GITHUB_PAT> | docker login ghcr.io -u <your-github-username> --password-stdin
+```
+
+If the GHCR package is **public**, no authentication is needed.
+
+Pull the latest image:
+
+```bash
+docker pull ghcr.io/<owner>/hireflo:latest
+```
+
+Pull a specific commit:
+
+```bash
+docker pull ghcr.io/<owner>/hireflo:sha-3e879bb
+```
+
+Pull a specific release:
+
+```bash
+docker pull ghcr.io/<owner>/hireflo:v1.0.0
+```
+
+### Running the registry image
+
+```bash
+# Run the published image — inject secrets at runtime via --env-file
+docker run --rm -p 8501:8501 \
+  --env-file .env \
+  ghcr.io/<owner>/hireflo:latest
+```
+
+The UI is then available at `http://localhost:8501`.
+
+Secrets are **never** baked into the image.  The `.env` file is passed at
+runtime only.  Never run with `ENV OPENROUTER_API_KEY=...` inside the
+Dockerfile.
+
+### GHCR package visibility
+
+By default, a GHCR package linked to a **private** repository is also private.
+A package linked to a **public** repository is public.
+
+To change package visibility independently of the repository:
+
+1. Go to `https://github.com/<owner>/HireFlo/pkgs/container/hireflo`
+2. Click **Package settings**
+3. Change visibility to **Public** or **Private**
+
+Changing repository visibility does **not** automatically change package
+visibility.
+
+### Local build commands
+
+```bash
+# Build the image locally (from project root, inside WSL)
+docker build -t hireflo:latest .
+
+# Run the locally-built image — pass .env at runtime
+docker run --rm -p 8501:8501 --env-file .env hireflo:latest
+
+# The UI is available at http://localhost:8501
+```
+
+### Creating a release tag
+
+```bash
+# Tag the current HEAD as v1.0.0
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+GitHub Actions will then build and push:
+
+```
+ghcr.io/<owner>/hireflo:v1.0.0
+ghcr.io/<owner>/hireflo:1.0
+ghcr.io/<owner>/hireflo:latest
+ghcr.io/<owner>/hireflo:sha-<short-sha>
+```
+
+Do not create fake production release tags.  Use `v0.x.y` during development
+(e.g. `v0.1.0`) to test the release tagging behavior before a real `v1.0.0`.
+
+### Security checklist
+
+| Check | Status |
+|---|---|
+| `GITHUB_TOKEN` not echoed | ✅ never printed in workflow |
+| `OPENROUTER_API_KEY` not in image | ✅ not in Dockerfile, not in CI |
+| `.env` not committed | ✅ gitignored |
+| Secrets not baked into Docker layers | ✅ runtime-only via `--env-file` |
+| GHCR credentials not hardcoded | ✅ dynamic `github.repository_owner` |
+| Workflow permissions minimal | ✅ `contents: read`, `packages: write` only |
+| No push on pull requests | ✅ `push: ${{ github.event_name != 'pull_request' }}` |
+| Login skipped on PRs | ✅ `if: github.event_name != 'pull_request'` |
+
+---
 
 ## What Phase 7 implements
 
@@ -914,9 +1180,7 @@ requirements.txt
 4. ✅ LangGraph state and workflow
 5. ✅ Guardrails and human approval
 6. ✅ Streamlit UI
-7. ✅ Tests
-8. ✅ Docker
-9. ✅ GitHub Actions CI
-10. Container registry
-11. CD / deployment
-12. Monitoring / observability
+7. ✅ Docker + GitHub Actions CI
+8. ✅ Container registry (GHCR)
+9. CD / deployment
+10. Monitoring / observability

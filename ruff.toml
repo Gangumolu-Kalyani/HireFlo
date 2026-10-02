@@ -1,0 +1,31 @@
+# ============================================================
+# HireFlo — ruff configuration
+# ============================================================
+
+# Minimum ruff version that supports this config.
+required-version = ">=0.4.0"
+
+# Files / directories to skip entirely.
+# The debugging scripts at the repo root are not part of the application.
+exclude = [
+    "check_failure.py",
+    "get_annotations.py",
+    "get_logs.py",
+    "monitor_ci.py",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".git",
+]
+
+# Target the same Python version used in the Dockerfile.
+target-version = "py312"
+
+[lint]
+# E/W = pycodestyle errors/warnings, F = pyflakes, I = isort
+select = ["E", "W", "F", "I"]
+# E501: line too long — not enforced; the codebase uses long lines throughout
+#       and reformatting is out of scope for Phase 8.
+# E741: ambiguous variable name — a few test lambdas use 'l' as a parameter
+#       name; these are pre-existing and fixing them is out of scope here.
+ignore = ["E501", "E741"]

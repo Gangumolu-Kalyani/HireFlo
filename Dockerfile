@@ -24,9 +24,14 @@
 FROM python:3.12-slim
 
 # ── Build-time metadata ───────────────────────────────────────────────────────
+# Static labels baked into every build (local and CI).
+# In CI, docker/metadata-action injects additional OCI labels at build time:
+#   org.opencontainers.image.source    — repository URL (dynamic, not hardcoded)
+#   org.opencontainers.image.revision  — exact git commit SHA
+#   org.opencontainers.image.version   — version tag or branch ref
+#   org.opencontainers.image.created   — ISO 8601 timestamp
 LABEL org.opencontainers.image.title="HireFlo"
 LABEL org.opencontainers.image.description="AI Recruitment Agent — LangGraph + Streamlit"
-LABEL org.opencontainers.image.source="https://github.com/Gangumolu-Kalyani/HireFlo"
 
 # ── System dependencies ───────────────────────────────────────────────────────
 # curl is needed for the HEALTHCHECK only.
