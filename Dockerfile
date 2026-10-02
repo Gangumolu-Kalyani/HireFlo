@@ -1,0 +1,79 @@
+# ============================================================
+# HireFlo — Dockerfile
+# ============================================================
+#
+# Stages
+# ------
+# (single stage — slim Python 3.12 is small enough)
+#
+# Runtime
+# -------
+# streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
+#
+# Secrets
+# -------
+# Do NOT bake secrets into the image.  Pass them at runtime:
+#   docker run --env-file .env -p 8501:8501 hireflo:latest
+#
+# Security
+# --------
+# The application runs as a non-root user (hireflo, uid 1000).
+# ============================================================
+
+# ── Base image ────────────────────────────────────────────────────────────────
+FROM python:3.12-slim
+
+# ── Build-time metadata ───────────────────────────────────────────────────────
+LABEL org.opencontainers.image.title="HireFlo"
+LABEL org.opencontainers.image.description="AI Recruitment Agent — LangGraph + Streamlit"
+LABEL org.opencontainers.image.source="https://github.com/your-org/hireflo"
+
+# ── System dependencies ───────────────────────────────────────────────────────
+# curl is needed for the HEALTHCHECK only.
+# --no-install-recommends keeps the layer slim.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Non-root user ─────────────────────────────────────────────────────────────
+RUN groupadd --gid 1000 hireflo \
+    && useradd --uid 1000 --gid hireflo --no-create-home --shell /bin/bash hireflo
+
+# ── Working directory ─────────────────────────────────────────────────────────
+WORKDIR /app
+
+# ── Python dependencies ───────────────────────────────────────────────────────
+# Copy requirements first so Docker can cache this layer independently of
+# application code changes.
+COPY requirements.txt ./
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# ── Application code ──────────────────────────────────────────────────────────
+COPY app/ ./app/
+
+# ── Ownership ─────────────────────────────────────────────────────────────────
+RUN chown -R hireflo:hireflo /app
+
+# ── Switch to non-root user ───────────────────────────────────────────────────
+USER hireflo
+
+# ── Streamlit configuration ───────────────────────────────────────────────────
+# Disable the Streamlit browser-open and usage-stats prompts for container use.
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+ENV STREAMLIT_SERVER_HEADLESS=true
+
+# ── Exposed port ─────────────────────────────────────────────────────────────
+EXPOSE 8501
+
+# ── Healthcheck ───────────────────────────────────────────────────────────────
+# Streamlit exposes a /_stcore/health endpoint.
+# --start-period gives the app time to initialise before the first check.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+CMD ["python", "-m", "streamlit", "run", "app/ui/streamlit_app.py", \
+     "--server.address", "0.0.0.0", \
+     "--server.port", "8501"]

@@ -1,0 +1,60 @@
+# ============================================================
+# .dockerignore — exclude local dev artifacts from the image
+# ============================================================
+
+# Version control
+.git
+.github
+
+# Python virtual environments
+.venv
+venv
+env
+
+# Byte-compiled / optimised / DLL files
+__pycache__
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# Build / dist artefacts
+*.egg-info
+dist
+build
+
+# Test and lint caches
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+.mypy_cache
+
+# Secrets — NEVER copy into the image
+.env
+.env.*
+!.env.example
+
+# Development tool caches
+.deepeval
+
+# Editor / OS artefacts
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs
+
+# Tests — not needed at runtime
+tests
+
+# Docs / CI helpers
+README.md
+wait_docker.sh
+
+# Docker files themselves (already in context, no need to copy)
+Dockerfile
+.dockerignore

@@ -4,7 +4,199 @@ An AI-powered recruitment agent (LangGraph + OpenRouter) that parses a job descr
 scores candidates against a JD-based rubric with evidence, ranks them, and proposes interviews —
 **always behind a human approval gate**.
 
-> Status: **Phase 6 — Streamlit Human Review UI implemented.**
+> Status: **Phase 7 — DevOps Foundation: Docker + CI implemented.**
+
+## What Phase 7 implements
+
+Docker containerisation and a GitHub Actions CI pipeline that automatically
+lints, tests, and builds the application on every push.
+
+### Why Docker
+
+- **Reproducibility**: the application runs identically on every machine and
+  in CI, regardless of the host OS or Python installation.
+- **Isolation**: dependencies are pinned inside the image; the host system is
+  unaffected.
+- **Deployment readiness**: the same image that passes CI can be pushed to a
+  registry and deployed in Phase 8+.
+
+### Architecture
+
+```
+                    DEVELOPER
+                        │
+                        ▼
+                    Git Push
+                        │
+                        ▼
+                   GitHub Repo
+                        │
+                 ┌──────┴──────┐
+                 │             │
+                 ▼             ▼
+             CI Workflow    Source Code
+                 │
+       ┌─────────┼──────────┐
+       ▼         ▼          ▼
+     Ruff      Pytest   Docker Build
+       │         │          │
+       └─────────┼──────────┘
+                 ▼
+              CI PASS
+                 │
+                 ▼
+           Docker Image
+                 │
+                 ▼
+          Local / Future
+            Deployment
+```
+
+### Dockerfile
+
+`python:3.12-slim` base image — matches the project's Python version exactly.
+
+Key decisions:
+
+| Instruction | Purpose |
+|---|---|
+| `apt-get install curl` | Required for HEALTHCHECK only (`curl -f`) |
+| `useradd hireflo` (uid 1000) | Non-root user — principle of least privilege |
+| `COPY requirements.txt` first | Separate layer so pip cache survives code changes |
+| `COPY app/` | Application code only — tests and secrets excluded |
+| `EXPOSE 8501` | Documents the port; does not publish it |
+| `HEALTHCHECK` | Docker monitors `/_stcore/health` every 30 s |
+| `CMD python -m streamlit run` | Uses `--server.address 0.0.0.0` so the port is accessible outside the container |
+
+### .dockerignore
+
+Excluded from every build context:
+
+- `.git`, `.github` — version control, not needed at runtime
+- `.venv`, `venv` — local virtual environment
+- `__pycache__`, `*.pyc` — byte-compiled files
+- `.pytest_cache`, `.ruff_cache` — tool caches
+- `.env`, `.env.*` — **secrets must never enter the image**
+- `tests/` — test suite is not needed at runtime
+- `*.log`, `logs/` — local log files
+
+### Environment variables
+
+Secrets are passed at **runtime**, never baked into the image:
+
+```bash
+# Good — secrets injected at runtime
+docker run --rm -p 8501:8501 --env-file .env hireflo:latest
+
+# Bad — never do this
+ENV OPENROUTER_API_KEY=sk-or-...   # ← DO NOT add this to Dockerfile
+COPY .env .                         # ← DO NOT add this to Dockerfile
+```
+
+The `.env` file is gitignored.  Copy `.env.example` and fill in your key:
+
+```bash
+cp .env.example .env
+nano .env   # set OPENROUTER_API_KEY=sk-or-...
+```
+
+### Local Docker commands
+
+```bash
+# Build the image (from the project root, inside WSL)
+docker build -t hireflo:latest .
+
+# Run the container — passes your .env at runtime
+docker run --rm -p 8501:8501 --env-file .env hireflo:latest
+
+# The UI is then available at http://localhost:8501
+```
+
+### WSL + Docker Desktop
+
+The project is developed inside WSL2 (Ubuntu).  Docker Desktop for Windows
+provides the Docker daemon and integrates with WSL2 automatically.
+
+Setup:
+1. Install Docker Desktop for Windows.
+2. In Docker Desktop → Settings → Resources → WSL Integration, enable the
+   Ubuntu distribution.
+3. Open an Ubuntu WSL terminal.  `docker` is available on the PATH.
+
+Verify from WSL:
+
+```bash
+docker --version     # Docker version 29.8.1, build 4a63305
+docker run hello-world
+```
+
+If `docker` is not found in PATH, add the Docker Desktop binary directory:
+
+```bash
+# In ~/.bashrc or ~/.profile
+export PATH="$PATH:/mnt/c/Users/<your-username>/AppData/Local/Programs/DockerDesktop/resources/bin"
+```
+
+### GitHub Actions CI
+
+File: `.github/workflows/ci.yml`
+
+Triggers on every `push` and `pull_request`.
+
+#### CI stages
+
+```
+push / pull_request
+        │
+        ├─── Job: lint  ──── ruff check .
+        │
+        ├─── Job: test  ──── pytest -v  (APP_ENV=test, no real LLM)
+        │
+        └─── Job: docker ─── (needs: lint + test)
+                  │
+                  ├── docker/setup-buildx-action
+                  ├── docker/build-push-action (push: false, tags: hireflo:ci)
+                  └── smoke test: curl /_stcore/health → HTTP 200
+```
+
+**No secrets are required** for lint, test, or build.  All 424 tests use a
+fake LLM service — `OPENROUTER_API_KEY` is not needed in CI.
+
+#### CI caching
+
+- **pip**: `actions/cache` keyed on `requirements.txt` hash — skips download
+  if dependencies have not changed.
+- **Docker layers**: `docker/build-push-action` with `cache-from/cache-to: type=gha`
+  — reuses unchanged layers across runs.
+
+#### Inspecting a failed CI run
+
+1. Go to the repository on GitHub → **Actions** tab.
+2. Click the failing workflow run.
+3. Click the failing job (lint / test / docker).
+4. Expand the step that failed to see the full log.
+
+Common failure causes:
+
+| Failure | Fix |
+|---|---|
+| `ruff check .` exits 1 | Run `ruff check . --fix` locally, commit |
+| `pytest` exits 1 | Run `pytest -v` locally, fix the failing test |
+| Docker build fails | Check `Dockerfile` syntax; verify `requirements.txt` |
+| Smoke test fails | Check container logs: `docker logs hireflo-smoke` |
+
+### Docker image size
+
+```
+IMAGE            ID             DISK USAGE   CONTENT SIZE
+hireflo:latest   ed8c6309b9e5          1GB          228MB
+```
+
+Content size (228 MB) is the compressed image payload.  Disk usage (1 GB)
+reflects the uncompressed layers on disk, dominated by numpy, pyarrow,
+pandas, and the LangChain/LangGraph dependency tree.
+
+---
 
 ## What Phase 6 implements
 
@@ -722,9 +914,9 @@ requirements.txt
 4. ✅ LangGraph state and workflow
 5. ✅ Guardrails and human approval
 6. ✅ Streamlit UI
-7. Tests
-8. Docker
-9. GitHub Actions CI
+7. ✅ Tests
+8. ✅ Docker
+9. ✅ GitHub Actions CI
 10. Container registry
 11. CD / deployment
 12. Monitoring / observability

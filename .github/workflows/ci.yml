@@ -1,0 +1,139 @@
+# ============================================================
+# HireFlo — GitHub Actions CI
+# ============================================================
+#
+# Stages
+# ------
+# 1. lint     — ruff check .
+# 2. test     — pytest -v  (424 tests, no real LLM calls)
+# 3. docker   — docker build -t hireflo:ci .
+#
+# Triggers
+# --------
+# Every push and pull_request on any branch.
+#
+# Secrets
+# -------
+# No secrets are required for lint / test / build.
+# OPENROUTER_API_KEY is NOT needed — all tests use a fake LLM.
+# ============================================================
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # ── 1. Lint ────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ruff
+        run: ruff check .
+
+  # ── 2. Test ────────────────────────────────────────────────────────────────
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        run: pytest -v
+        env:
+          # Ensure tests run in test mode and never attempt real LLM calls.
+          APP_ENV: test
+
+  # ── 3. Docker build ────────────────────────────────────────────────────────
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    # Only build after lint and tests both pass.
+    needs: [lint, test]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false          # Phase 7: build only, no registry push
+          tags: hireflo:ci
+          # Use GitHub Actions cache to speed up repeated builds.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test container
+        run: |
+          # Start the container without a real API key — Streamlit should
+          # still start and expose the health endpoint before any LLM call.
+          docker run -d \
+            --name hireflo-smoke \
+            -p 8501:8501 \
+            -e APP_ENV=test \
+            -e OPENROUTER_API_KEY=dummy \
+            hireflo:ci
+
+          # Wait up to 30 s for the health endpoint to respond.
+          echo "Waiting for Streamlit health endpoint..."
+          for i in $(seq 1 10); do
+            if curl -sf http://localhost:8501/_stcore/health; then
+              echo ""
+              echo "✅  Streamlit is healthy (attempt $i)"
+              break
+            fi
+            echo "  attempt $i/10 — not ready yet, sleeping 3 s"
+            sleep 3
+          done
+
+          # Capture final health check result and stop the container.
+          curl -sf http://localhost:8501/_stcore/health || \
+            (echo "❌  Streamlit health check failed" && docker logs hireflo-smoke && exit 1)
+
+          docker stop hireflo-smoke
+          docker rm hireflo-smoke
