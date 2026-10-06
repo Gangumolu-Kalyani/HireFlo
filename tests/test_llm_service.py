@@ -19,7 +19,7 @@ class StubChatModel:
     def with_structured_output(self, schema, **kwargs):
         return self
 
-    def invoke(self, messages):
+    def invoke(self, messages, config=None):
         self.messages = messages
         if isinstance(self.result, Exception):
             raise self.result
@@ -46,7 +46,11 @@ def test_builds_openrouter_client_from_settings_without_network():
 
 def test_structured_call_returns_parsed_model():
     stub = StubChatModel(CandidateProfile(name="Alex Rivera"))
-    result = _service(chat_model=stub).structured_call("system", "user", CandidateProfile)
+    result = _service(chat_model=stub).structured_call(
+        "system",
+        "user",
+        CandidateProfile,
+    )
     assert result.name == "Alex Rivera"
     assert [m.type for m in stub.messages] == ["system", "human"]
 
@@ -54,14 +58,22 @@ def test_structured_call_returns_parsed_model():
 def test_provider_error_is_wrapped_without_leaking_details():
     stub = StubChatModel(RuntimeError(f"auth failed for {FAKE_KEY}"))
     with pytest.raises(LLMError) as exc_info:
-        _service(chat_model=stub).structured_call("s", "u", CandidateProfile)
+        _service(chat_model=stub).structured_call(
+            "s",
+            "u",
+            CandidateProfile,
+        )
     assert FAKE_KEY not in str(exc_info.value)
 
 
 def test_wrong_output_type_raises():
     stub = StubChatModel({"name": "not a model"})
     with pytest.raises(LLMError):
-        _service(chat_model=stub).structured_call("s", "u", CandidateProfile)
+        _service(chat_model=stub).structured_call(
+            "s",
+            "u",
+            CandidateProfile,
+        )
 
 
 def test_invalid_llm_output_is_wrapped():
@@ -70,7 +82,12 @@ def test_invalid_llm_output_is_wrapped():
         CandidateProfile(skills=["Python"])
     except ValidationError as exc:
         validation_error = exc
+
     with pytest.raises(LLMError):
-        _service(chat_model=StubChatModel(validation_error)).structured_call(
-            "s", "u", CandidateProfile
+        _service(
+            chat_model=StubChatModel(validation_error)
+        ).structured_call(
+            "s",
+            "u",
+            CandidateProfile,
         )

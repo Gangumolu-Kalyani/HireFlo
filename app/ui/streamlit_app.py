@@ -37,16 +37,20 @@ main            — page assembly
 
 from __future__ import annotations
 
-import logging
 import traceback
 from typing import Any
 
 import streamlit as st
 
-# ── Logging (safe: no secrets ever written) ───────────────────────────────────
-logger = logging.getLogger(__name__)
+from app.observability.logging_config import get_logger, setup_logging
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# ── Production Logging ────────────────────────────────────────────────────────
+setup_logging()
+logger = get_logger(__name__)
+logger.info("HireFlo application started")
+
+
+# ── Constants ────────────────────────────────────────────────────────────────
 
 _STATUSES_WITH_APPROVAL = {"PENDING_APPROVAL"}
 _STATUSES_NO_APPROVAL = {
