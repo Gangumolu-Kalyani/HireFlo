@@ -1,5 +1,7 @@
 """LLMService tests using a stub chat model - no network, no real key."""
 
+import logging
+
 import pytest
 from langchain_openai import ChatOpenAI
 from pydantic import ValidationError
@@ -91,3 +93,50 @@ def test_invalid_llm_output_is_wrapped():
             "u",
             CandidateProfile,
         )
+
+
+def test_missing_usage_metadata_is_logged_as_unavailable(caplog):
+    """Missing provider usage must not be reported as zero token usage."""
+
+    stub = StubChatModel(CandidateProfile(name="Alex Rivera"))
+
+    with caplog.at_level(logging.INFO):
+        result = _service(chat_model=stub).structured_call(
+            "system",
+            "user",
+            CandidateProfile,
+        )
+
+    assert result.name == "Alex Rivera"
+    assert "token_usage_unavailable=true" in caplog.text
+    assert "input_tokens=0" not in caplog.text
+    assert "output_tokens=0" not in caplog.text
+    assert "total_tokens=0" not in caplog.text
+
+
+def test_missing_usage_metadata_does_not_log_fake_zero_cost(caplog):
+    """Missing usage metadata must not produce an estimated $0 LLM cost."""
+
+    settings = Settings(
+        _env_file=None,
+        openrouter_api_key=FAKE_KEY,
+        llm_input_cost_per_million=3.0,
+        llm_output_cost_per_million=15.0,
+    )
+
+    stub = StubChatModel(CandidateProfile(name="Alex Rivera"))
+    service = LLMService(
+        settings=settings,
+        chat_model=stub,
+    )
+
+    with caplog.at_level(logging.INFO):
+        result = service.structured_call(
+            "system",
+            "user",
+            CandidateProfile,
+        )
+
+    assert result.name == "Alex Rivera"
+    assert "token_usage_unavailable=true" in caplog.text
+    assert "estimated_cost_usd=" not in caplog.text

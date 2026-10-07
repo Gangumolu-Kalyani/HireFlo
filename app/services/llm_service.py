@@ -39,7 +39,7 @@ class LLMService:
         chat_model: BaseChatModel | None = None,
     ):
         self._settings = settings or get_settings()
-        self._chat_model = chat_model  # built lazily so importing never needs an API key
+        self._chat_model = chat_model
 
     def structured_call(
         self,
@@ -86,36 +86,62 @@ class LLMService:
 
         latency_ms = (time.perf_counter() - start_time) * 1000
 
-        input_tokens = 0
-        output_tokens = 0
-        total_tokens = 0
+        usage_metadata = usage_callback.usage_metadata
 
-        for usage in usage_callback.usage_metadata.values():
-            input_tokens += int(usage.get("input_tokens", 0) or 0)
-            output_tokens += int(usage.get("output_tokens", 0) or 0)
-            total_tokens += int(usage.get("total_tokens", 0) or 0)
+        if usage_metadata:
+            input_tokens = 0
+            output_tokens = 0
+            total_tokens = 0
 
-        # Some providers may omit total_tokens even when input/output
-        # token counts are available.
-        if total_tokens == 0 and (input_tokens or output_tokens):
-            total_tokens = input_tokens + output_tokens
+            for usage in usage_metadata.values():
+                input_tokens += int(
+                    usage.get("input_tokens", 0) or 0
+                )
+                output_tokens += int(
+                    usage.get("output_tokens", 0) or 0
+                )
+                total_tokens += int(
+                    usage.get("total_tokens", 0) or 0
+                )
 
-        logger.info(
-            "LLM call completed | model=%s | schema=%s | "
-            "latency_ms=%.2f | input_tokens=%d | "
-            "output_tokens=%d | total_tokens=%d",
-            self._settings.llm_model,
-            schema.__name__,
-            latency_ms,
-            input_tokens,
-            output_tokens,
-            total_tokens,
-        )
+            # Some providers may omit total_tokens while still returning
+            # separate input and output token counts.
+            if total_tokens == 0 and (
+                input_tokens or output_tokens
+            ):
+                total_tokens = input_tokens + output_tokens
 
-        self._log_cost(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
+            logger.info(
+                "LLM call completed | model=%s | schema=%s | "
+                "latency_ms=%.2f | input_tokens=%d | "
+                "output_tokens=%d | total_tokens=%d",
+                self._settings.llm_model,
+                schema.__name__,
+                latency_ms,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+            )
+
+            self._log_cost(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+
+        else:
+            logger.warning(
+                "LLM call completed | model=%s | schema=%s | "
+                "latency_ms=%.2f | token_usage_unavailable=true",
+                self._settings.llm_model,
+                schema.__name__,
+                latency_ms,
+            )
+
+            logger.info(
+                "LLM cost unavailable | model=%s | "
+                "token_usage_unavailable=true",
+                self._settings.llm_model,
+            )
 
         if not isinstance(result, schema):
             logger.error(
@@ -147,13 +173,20 @@ class LLMService:
 
         if input_rate is None or output_rate is None:
             logger.info(
-                "LLM cost unavailable | model=%s | pricing_not_configured=true",
+                "LLM cost unavailable | model=%s | "
+                "pricing_not_configured=true",
                 self._settings.llm_model,
             )
             return
 
-        input_cost = (input_tokens / 1_000_000) * input_rate
-        output_cost = (output_tokens / 1_000_000) * output_rate
+        input_cost = (
+            input_tokens / 1_000_000
+        ) * input_rate
+
+        output_cost = (
+            output_tokens / 1_000_000
+        ) * output_rate
+
         total_cost = input_cost + output_cost
 
         logger.info(
