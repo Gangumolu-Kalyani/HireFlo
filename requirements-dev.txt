@@ -1,0 +1,15 @@
+# ============================================================
+# HireFlo — Development and test dependencies
+# ============================================================
+#
+# Install alongside production deps for local development and CI:
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# The Docker production image does NOT install this file.
+# ============================================================
+
+# Test framework
+pytest==9.1.1
+
+# Linter / formatter
+ruff==0.16.9

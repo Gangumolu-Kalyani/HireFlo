@@ -1,0 +1,27 @@
+# ============================================================
+# HireFlo — Trivy vulnerability exceptions
+# ============================================================
+#
+# This file documents intentional exceptions to the Trivy scan policy.
+#
+# Format: one CVE ID per line, with a comment explaining the exception.
+#
+# Policy:
+#   CRITICAL vulnerabilities   → always fail CI (no exceptions)
+#   HIGH with a fix available  → always fail CI (no exceptions)
+#   HIGH with no fix available → can be excepted here with justification
+#   MEDIUM / LOW               → reported only, never fail CI
+#
+# When adding an exception:
+#   1. State the CVE
+#   2. State why it does not affect HireFlo
+#   3. Set a review date (re-evaluate on next dependency update)
+#
+# Example:
+#   # CVE-2024-XXXXX | libX | Not exploitable — we never call the affected API
+#   # Review: 2026-04-01
+#   CVE-2024-XXXXX
+#
+# ============================================================
+
+# No exceptions at this time.

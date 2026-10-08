@@ -4,7 +4,489 @@ An AI-powered recruitment agent (LangGraph + OpenRouter) that parses a job descr
 scores candidates against a JD-based rubric with evidence, ranks them, and proposes interviews —
 **always behind a human approval gate**.
 
-> Status: **Phase 9 — Render Deployment: CD pipeline to production implemented.**
+> Status: **Phase 12 — Final CI/CD & Release Engineering COMPLETE.**
+
+[![CI](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/ci.yml/badge.svg)](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/ci.yml)
+[![Release](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/release.yml/badge.svg)](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/release.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://github.com/Gangumolu-Kalyani/HireFlo/pkgs/container/hireflo)
+
+---
+
+## What Phase 12 implements
+
+Phase 12 finalizes HireFlo's CI/CD and release engineering.  It introduces
+a dedicated release pipeline, versioned Docker image tags, production smoke
+testing, deployment health verification, rollback runbook, and complete
+release documentation.
+
+### Final Production Architecture
+
+```
+                    Developer
+                        │
+                        ▼
+                     GitHub
+                        │
+             ┌──────────┴──────────┐
+             │                     │
+             ▼                     ▼
+        Pull Request            Release Tag
+             │                  v1.0.0
+             ▼                     │
+      GitHub Actions               ▼
+      (ci.yml)              GitHub Actions
+             │               (release.yml)
+      ┌──────┼─────────┐           │
+      ▼      ▼         ▼           │
+    Ruff   Pytest   Security       │
+                     Scans         │
+      │      │         │           │
+      └──────┼─────────┘           │
+             ▼                     │
+        Docker Build ◄─────────────┘
+             │
+             ▼
+        Trivy Scan
+             │
+             ▼
+       Docker Smoke Test
+             │
+             ▼
+            GHCR
+             │
+       Immutable Image
+       (sha-*, v1.0.0)
+             │
+             ▼
+           Render
+             │
+             ▼
+       Health Verification
+       (/_stcore/health)
+             │
+             ▼
+        HireFlo Production
+             │
+             ▼
+       GitHub Release Created
+             │
+             ▼
+       Monitoring / Logs
+```
+
+### Versioning Strategy
+
+HireFlo uses **Semantic Versioning** (`MAJOR.MINOR.PATCH`):
+
+| Type | Trigger |
+|---|---|
+| `PATCH` (e.g. `v1.0.1`) | Bug fix or security patch |
+| `MINOR` (e.g. `v1.1.0`) | New feature, backward-compatible |
+| `MAJOR` (e.g. `v2.0.0`) | Breaking change |
+
+Git tags are the single source of truth.  Creating a `v*.*.*` tag triggers
+the full release pipeline automatically.
+
+```bash
+git tag -a v1.0.0 -m "Release v1.0.0"
+git push origin v1.0.0
+```
+
+### Docker Image Tagging
+
+| Tag | Example | Immutable? | Created when |
+|---|---|---|---|
+| `vMAJOR.MINOR.PATCH` | `v1.0.0` | ✅ Yes | Release tag push |
+| `MAJOR.MINOR` | `1.0` | ✅ Yes | Release tag push |
+| `sha-<short>` | `sha-b43fc5b` | ✅ Yes | Every push |
+| `latest` | `latest` | ❌ No | Push to `main` |
+
+Production deployments always use an immutable tag (`sha-<short>` or `vX.Y.Z`).
+The `:latest` tag is never the sole production reference.
+
+### CI/CD Workflows
+
+| Workflow | File | Triggered by | Publishes image? | Deploys? | Creates Release? |
+|---|---|---|---|---|---|
+| CI | `ci.yml` | push to `main`, PRs | ✅ (main only) | ✅ (main only) | ❌ No |
+| Release | `release.yml` | `v*.*.*` tags | ✅ | ✅ | ✅ Yes |
+
+### Release Pipeline (release.yml)
+
+For every `v*.*.*` tag, the release workflow runs the full security
+pipeline and only creates a GitHub Release if every step passes:
+
+1. ✅  Ruff lint
+2. ✅  Pytest (all tests, fake LLM)
+3. ✅  Gitleaks secret scan (full git history)
+4. ✅  pip-audit dependency scan
+5. ✅  Docker build
+6. ✅  Trivy image scan (CRITICAL/HIGH fail)
+7. ✅  Docker smoke test (`/_stcore/health`)
+8. ✅  Non-root container verification
+9. ✅  Push versioned + SHA tags to GHCR
+10. ✅  Trigger Render deployment (immutable SHA tag)
+11. ✅  Poll `/_stcore/health` for up to 5 minutes
+12. ✅  Create GitHub Release with full release notes
+
+A release is not published if any step fails.
+
+### Production Smoke Test
+
+`scripts/smoke_test_prod.py` is a lightweight, stdlib-only script that
+polls `/_stcore/health` and reports success or failure:
+
+```bash
+# Run against the production URL
+python scripts/smoke_test_prod.py https://hireflo.onrender.com
+
+# Or via environment variable
+HIREFLO_PROD_URL=https://hireflo.onrender.com python scripts/smoke_test_prod.py
+```
+
+- No real candidate data submitted
+- No LLM calls
+- No secrets printed
+- Configurable timeout (default 5 min) and poll interval (default 10 s)
+- Exit codes: `0` healthy, `1` timeout/failure, `2` configuration error
+
+### Rollback Strategy
+
+Because every production deploy uses an immutable SHA tag, rolling back
+is re-deploying a known-good image — no rebuild required.
+
+**Option A — Render Dashboard (recommended)**
+
+1. Go to the **hireflo** service → **Deploys** tab.
+2. Find the last known-good deploy.
+3. Click **Rollback to this deploy**.
+
+**Option B — Deploy hook**
+
+```bash
+# Roll back to a specific SHA tag
+IMG_URL="ghcr.io%2Fgangumolu-kalyani%2Fhireflo%3Asha-<previous-sha>"
+curl "${RENDER_DEPLOY_HOOK_URL}&imgURL=${IMG_URL}"
+```
+
+**Option C — Version tag**
+
+```bash
+IMG_URL="ghcr.io%2Fgangumolu-kalyani%2Fhireflo%3Av1.0.0"
+curl "${RENDER_DEPLOY_HOOK_URL}&imgURL=${IMG_URL}"
+```
+
+Verify after rollback:
+
+```bash
+python scripts/smoke_test_prod.py https://hireflo.onrender.com
+```
+
+See [RELEASE.md](RELEASE.md) for the complete rollback runbook.
+
+### GitHub Releases
+
+GitHub Releases are created automatically by `release.yml` for every
+`v*.*.*` tag.  Each release includes:
+
+- Version and commit SHA
+- GHCR image references
+- Security scan results table
+- Deployment status
+- Rollback instructions
+
+View releases: `https://github.com/Gangumolu-Kalyani/HireFlo/releases`
+
+### Release Immutability Guarantee
+
+- A `v1.0.0` Git tag always points to the same commit.
+- A `ghcr.io/.../hireflo:v1.0.0` image always refers to the same image digest.
+- SHA tags (`sha-<short>`) are created once and never overwritten.
+- The release workflow uses `push: true` only after Trivy and smoke test pass.
+
+---
+
+## What Phase 11 implements
+
+Phase 11 hardens HireFlo for production by introducing multi-layered security
+scanning, supply-chain verification, non-root execution, and strict
+dependency separation.
+
+### Security Architecture
+
+```
+             GitHub
+                │
+                ▼
+        GitHub Actions
+                │
+      ┌─────────┼─────────┐
+      ▼         ▼         ▼
+   Ruff       Pytest   Secret Scan
+      │         │       (Gitleaks)
+      └─────────┼─────────┘
+                ▼
+        Dependency Scan
+          (pip-audit)
+                │
+                ▼
+          Docker Build
+                │
+                ▼
+          Trivy Scan
+       (CRITICAL/HIGH fail)
+                │ PASS
+                ▼
+             GHCR
+        (Provenance + SBOM)
+                │ deploy hook
+                ▼
+             Render
+         (Non-root User)
+                │
+                ▼
+           🌐 HireFlo
+           (Hardened)
+```
+
+### Security Failure Policy
+
+The CI pipeline is configured with a strict security-first policy:
+
+| Layer | Tool | Failure Policy |
+|---|---|---|
+| Linting | Ruff | FAIL on any violation |
+| Testing | Pytest | FAIL on any failure |
+| Secrets | Gitleaks | FAIL on any detected credential |
+| Dependencies | pip-audit | FAIL on CVE with available fix |
+| Container | Trivy | FAIL on CRITICAL or HIGH (with fix) |
+| Container | Trivy | REPORT ONLY for MEDIUM and LOW findings |
+
+Trivy exceptions are documented in `.trivyignore` with justification and a
+review date.  CRITICAL vulnerabilities are never excepted.
+
+### 1. Dependency Scanning
+
+`pip-audit` is run in CI against `requirements.txt` (production dependencies
+only) on every push and pull request.  It checks the installed packages
+against the OSV and PyPI Advisory databases.
+
+- Fails CI when a vulnerability has a compatible fix available.
+- Does not fail on vulnerabilities with no fix (those require manual review).
+- Development dependencies (`requirements-dev.txt`) are scanned separately
+  in the same job.
+
+### 2. Docker Image Scanning
+
+`Trivy` scans the built `hireflo:ci` image after every Docker build.  It
+inspects both OS-level packages (Debian slim base) and Python libraries.
+
+- **CRITICAL**: always fail — no exceptions.
+- **HIGH with fix**: fail — must be resolved before merge.
+- **HIGH without fix**: can be excepted in `.trivyignore` with justification.
+- **MEDIUM / LOW**: reported in CI output only; never block deploy.
+
+The scan runs before any GHCR push, so a vulnerable image is never published.
+
+### 3. Secret Scanning
+
+`Gitleaks` scans the complete git history on every push and pull request.  It
+detects patterns that look like real API keys, tokens, passwords, and private
+credentials committed to source control.
+
+- Fails CI immediately on any detection.
+- Scans the full git history (`fetch-depth: 0`), not just the latest commit.
+- Uses the auto-generated `GITHUB_TOKEN` — no additional credentials required.
+
+### 4. Non-Root Container
+
+The production container runs as the `hireflo` user (UID 1000), never as
+root.  This follows the principle of least privilege: if the application
+process is compromised, the attacker does not have root access to the host.
+
+The CI pipeline verifies this with an automated step after every build:
+
+```bash
+CONTAINER_USER=$(docker exec hireflo-smoke whoami)
+# Fails with exit 1 if CONTAINER_USER == "root"
+```
+
+The `Dockerfile` creates the user explicitly:
+
+```dockerfile
+RUN groupadd --gid 1000 hireflo \
+    && useradd --uid 1000 --gid hireflo --no-create-home --shell /bin/bash hireflo
+...
+USER hireflo
+```
+
+### 5. Runtime vs Development Dependencies
+
+Production and development dependencies are strictly separated:
+
+| File | Installed in | Contents |
+|---|---|---|
+| `requirements.txt` | Docker image + CI | pydantic, langchain, langgraph, streamlit, psycopg |
+| `requirements-dev.txt` | CI only | pytest, ruff |
+
+The Docker image installs only `requirements.txt`.  `pytest` and `ruff` are
+never present in the production container, reducing attack surface and image
+size.
+
+CI installs both:
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+Docker installs only production deps:
+```dockerfile
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+```
+
+### 6. GitHub Actions Permissions
+
+The workflow uses the principle of least privilege for GitHub Actions
+permissions:
+
+```yaml
+# Top-level — all jobs default to read-only source access
+permissions:
+  contents: read
+
+# docker job only — write access scoped to the job that actually pushes
+permissions:
+  contents: read
+  packages: write   # required for GHCR push only
+```
+
+`contents: write` is never granted.  `packages: write` is scoped exclusively
+to the `docker` job that publishes to GHCR — the `lint`, `test`, `secret-scan`,
+and `dep-scan` jobs run with `contents: read` only.
+
+All third-party Actions are pinned to a stable version tag (e.g.
+`actions/checkout@v4`, `aquasecurity/trivy-action@0.30.0`) to prevent
+supply-chain changes from affecting the pipeline.  No arbitrary shell
+downloads are used.
+
+Secrets are never echoed into logs.  The `RENDER_DEPLOY_HOOK_URL` is passed
+via environment variable, not interpolated directly into shell commands.
+
+### 7. Secret Management
+
+Secrets are managed at the infrastructure level and never touch source code:
+
+| Secret | Where stored | How used |
+|---|---|---|
+| `OPENROUTER_API_KEY` | Render Dashboard (secret env var) | Injected at container runtime |
+| `GITHUB_TOKEN` | Auto-generated by GitHub Actions | Used for GHCR auth — never echoed |
+| `RENDER_DEPLOY_HOOK_URL` | GitHub Actions Secrets | Called via `curl`; URL never printed |
+| GHCR PAT (for Render pull) | Render Dashboard credential | Used by Render to pull from GHCR |
+
+In application code, `OPENROUTER_API_KEY` and `DATABASE_URL` are stored as
+`pydantic.SecretStr` objects.  `SecretStr` prevents the values from appearing
+in `repr()`, `str()`, logs, or JSON serialisation:
+
+```python
+openrouter_api_key: SecretStr | None = None
+database_url: SecretStr | None = None
+```
+
+The `.env` file is gitignored and never committed.  Only `.env.example`
+(with empty values) is tracked.
+
+### 8. Candidate-Data Logging Policy
+
+HireFlo processes sensitive candidate information.  The logging policy
+ensures that personal data is never written to logs or audit trails:
+
+| Data | Logged? | Notes |
+|---|---|---|
+| Candidate name | ✅ In audit trail | Operational necessity |
+| Weighted score | ✅ In audit trail | Operational necessity |
+| Email / phone | ❌ Never logged | PII — omitted from all log calls |
+| Full resume text | ❌ Never logged | Too sensitive; could contain any PII |
+| LLM reasoning / chain-of-thought | ❌ Never logged | Internal model internals |
+| API keys / tokens | ❌ Never logged | `SecretStr` prevents accidental logging |
+| Guardrail flag names | ✅ In audit trail | Security event record |
+
+The `AuditStore` (PostgreSQL, optional) stores only `TrajectoryEntry` records:
+node name, status, step counter, and a safe detail string.  Raw resumes,
+job descriptions, and LLM prompts are never written to the persistent store.
+
+The `runner.py` correlation ID pattern (`correlation_id=thread_id`) allows
+operational tracing without logging personally identifiable candidate text.
+
+### 9. Prompt Injection Protection
+
+HireFlo implements layered defences against prompt injection in resume text:
+
+| Layer | What it does |
+|---|---|
+| Input guardrail | Regex-scans for injection patterns before any LLM call |
+| Delimiter wrapping | Resume text wrapped in `<resume>…</resume>`; fake tags escaped |
+| System prompt priority | Fixed system prompt always takes precedence over data |
+| Output validation | LLM output checked for injected criteria / suspicious scores |
+| Fairness check | Evidence strings scanned for prohibited attribute references |
+
+If a HIGH-severity injection pattern is detected, the workflow sets
+`final_status = "GUARDRAIL_BLOCKED"` and stops immediately.  No LLM call
+is made with the suspicious content.
+
+The Streamlit UI displays a clear BLOCKED banner to the HR reviewer and
+never exposes system prompts, API keys, or stack traces.
+
+### Supply-Chain Security
+
+HireFlo images are built with **GitHub BuildKit Provenance** and **SBOM**
+(Software Bill of Materials) generation. Every image in GHCR is signed and
+traceable to the exact source commit, and its entire dependency tree is
+attached as an OCI artifact.
+
+### Container Hardening
+
+- **Non-root user**: The container runs as the `hireflo` user (UID 1000). The
+  CI pipeline explicitly verifies this with an automated smoke test step.
+- **Image minimization**: The production image uses `python:3.12-slim` and
+  excludes all development tools (`ruff`, `pytest`) and tests.
+- **Dependency isolation**: `requirements.txt` (production) is strictly
+  separated from `requirements-dev.txt` (development/testing).
+
+### Application Security
+
+- **Rate Limiting**: Lightweight, session-based rate limiting is implemented
+  in the Streamlit UI (max 10 evaluations/hour, 5s interval) to prevent LLM
+  abuse.
+- **Safe Error Handling**: Stack traces and internal exception details are
+  sanitized before being displayed to users.
+- **Secret Management**: `OPENROUTER_API_KEY` and `DATABASE_URL` are handled
+  as `SecretStr` objects; they are never printed in logs or baked into images.
+
+---
+
+## What Phase 10 implements
+
+Phase 10 introduces monitoring and observability tools to track the health of
+the CI/CD pipeline and the deployed application.
+
+### Observability Stack
+
+| Layer | Tool | Purpose |
+|---|---|---|
+| CI Monitoring | `monitor_ci.py` | Polls GitHub Actions for build status |
+| Log Retrieval | `get_logs.py` | Fetches recent logs from Render / GHCR |
+| Annotation | `get_annotations.py` | Extracts check annotations from GH runs |
+| Failure Analysis | `check_failure.py` | Summarises why a pipeline failed |
+
+### Production Persistence
+
+The `AuditStore` (backed by PostgreSQL) provides an immutable, operational
+audit trail of every recruitment workflow. It records trajectory entries
+(node name, status, step) but **never stores raw resumes, job descriptions,
+or LLM-reasoning strings**, ensuring candidate privacy.
+
+---
 
 ## What Phase 9 implements
 
@@ -1462,4 +1944,5 @@ requirements.txt
 7. ✅ Docker + GitHub Actions CI
 8. ✅ Container registry (GHCR)
 9. ✅ CD / deployment (Render)
-10. Monitoring / observability
+10. ✅ Monitoring / observability
+11. ✅ Production security & hardening

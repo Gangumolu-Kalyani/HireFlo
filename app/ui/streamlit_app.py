@@ -37,6 +37,7 @@ main            — page assembly
 
 from __future__ import annotations
 
+import time
 import traceback
 from typing import Any
 
@@ -51,6 +52,21 @@ logger.info("HireFlo application started")
 
 
 # ── Constants ────────────────────────────────────────────────────────────────
+
+# ── In-process rate limiting ──────────────────────────────────────────────────
+# Each Streamlit session is one browser tab / user.  These limits prevent a
+# single session from hammering the LLM backend with rapid evaluations.
+#
+# Implementation: session-scoped counters stored in st.session_state.
+# No external state store (Redis, DB) is needed because the limit is per
+# browser session.  This is a lightweight production guard, not a distributed
+# rate limiter.
+#
+# For a production multi-user deployment, move to a shared rate limiter backed
+# by a database or Redis.  That is documented as future work.
+_RATE_LIMIT_MAX_EVALUATIONS: int = 10   # max evaluations per session
+_RATE_LIMIT_WINDOW_SECONDS: int = 3600  # rolling window (1 hour)
+_RATE_LIMIT_MIN_INTERVAL_SECONDS: int = 5  # minimum seconds between evaluations
 
 _STATUSES_WITH_APPROVAL = {"PENDING_APPROVAL"}
 _STATUSES_NO_APPROVAL = {
@@ -94,6 +110,8 @@ def _init_session() -> None:
         "human_review": None,
         "workflow_status": None,
         "evaluation_running": False,
+        # Rate-limiting state — per browser session, never persisted.
+        "_rate_eval_timestamps": [],   # list[float] — epoch timestamps of recent evals
     }
     for key, default in defaults.items():
         if key not in st.session_state:
@@ -114,6 +132,71 @@ def _reset_session() -> None:
         st.session_state.pop(key, None)
     _init_session()
 
+
+# =============================================================================
+# IN-PROCESS RATE LIMITING
+# =============================================================================
+
+
+def _check_rate_limit() -> tuple[bool, str]:
+    """Check whether the current session is allowed to start a new evaluation.
+
+    Returns
+    -------
+    allowed : bool
+        True if the evaluation may proceed.
+    reason : str
+        Human-readable message explaining a rejection (empty when allowed).
+
+    Implementation notes
+    --------------------
+    - Limits are per browser session (st.session_state) only.
+    - No external state store is used.
+    - Timestamps are pruned to the rolling window on each call so memory
+      usage stays bounded.
+    - This is a best-effort guard; a sophisticated attacker can bypass it by
+      opening multiple browser tabs.  For a public multi-user deployment,
+      replace or supplement with a server-side rate limiter.
+    """
+    now = time.monotonic()
+    timestamps: list[float] = st.session_state.get("_rate_eval_timestamps", [])
+
+    # Prune timestamps outside the rolling window.
+    window_start = now - _RATE_LIMIT_WINDOW_SECONDS
+    timestamps = [t for t in timestamps if t >= window_start]
+    st.session_state["_rate_eval_timestamps"] = timestamps
+
+    # Check minimum interval between consecutive evaluations.
+    if timestamps:
+        seconds_since_last = now - timestamps[-1]
+        if seconds_since_last < _RATE_LIMIT_MIN_INTERVAL_SECONDS:
+            wait = int(_RATE_LIMIT_MIN_INTERVAL_SECONDS - seconds_since_last) + 1
+            return False, (
+                f"Please wait {wait} second{'s' if wait != 1 else ''} before "
+                "starting another evaluation."
+            )
+
+    # Check total evaluations within the rolling window.
+    if len(timestamps) >= _RATE_LIMIT_MAX_EVALUATIONS:
+        oldest = timestamps[0]
+        reset_in = int(_RATE_LIMIT_WINDOW_SECONDS - (now - oldest)) + 1
+        minutes = reset_in // 60
+        seconds = reset_in % 60
+        time_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+        return False, (
+            f"You have reached the limit of {_RATE_LIMIT_MAX_EVALUATIONS} evaluations "
+            f"per hour.  Please wait {time_str} before trying again."
+        )
+
+    return True, ""
+
+
+def _record_evaluation_start() -> None:
+    """Record the current time as an evaluation start in the rate-limit state."""
+    now = time.monotonic()
+    timestamps: list[float] = st.session_state.get("_rate_eval_timestamps", [])
+    timestamps.append(now)
+    st.session_state["_rate_eval_timestamps"] = timestamps
 
 def _update_session_from_state(state: dict) -> None:
     """Sync session-state keys from a freshly returned graph state dict."""
@@ -908,10 +991,16 @@ def main() -> None:
             for err in validation_errors:
                 st.error(f"⚠️  {err}")
         else:
-            _reset_session()
-            with st.spinner("Running candidate evaluation…  (this may take 10–30 seconds)"):
-                _run_evaluation(resume_text, job_description, interview_week)
-            st.rerun()
+            # Rate-limit check — per session, in-process guard.
+            allowed, rate_reason = _check_rate_limit()
+            if not allowed:
+                st.warning(f"⏳  {rate_reason}")
+            else:
+                _record_evaluation_start()
+                _reset_session()
+                with st.spinner("Running candidate evaluation…  (this may take 10–30 seconds)"):
+                    _run_evaluation(resume_text, job_description, interview_week)
+                st.rerun()
 
     # ── Results area ──────────────────────────────────────────────────────────
     current_state: dict | None = st.session_state.get("current_state")

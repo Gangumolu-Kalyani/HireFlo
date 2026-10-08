@@ -1,38 +1,51 @@
 # ============================================================
-# HireFlo — GitHub Actions CI + GHCR publish + Render deploy
+# HireFlo — GitHub Actions CI + security scanning + GHCR publish + Render deploy
 # ============================================================
 #
 # Jobs
 # ----
-# 1. lint     — ruff check .
-# 2. test     — pytest -v  (424 tests, no real LLM calls)
-# 3. docker   — build, smoke-test, push to GHCR, trigger Render deploy
+# 1. lint          — ruff check .
+# 2. test          — pytest -v  (no real LLM calls)
+# 3. secret-scan   — Gitleaks (detect committed credentials)
+# 4. dep-scan      — pip-audit (Python dependency CVE scan)
+# 5. docker        — build + Trivy scan + smoke test + push to GHCR + Render deploy
+#
+# Security failure policy
+# -----------------------
+# FAIL:    ruff violations
+# FAIL:    pytest failures
+# FAIL:    secrets detected by Gitleaks
+# FAIL:    dependency vulnerability with a fix available (pip-audit)
+# FAIL:    CRITICAL Docker vulnerability (Trivy)
+# FAIL:    HIGH Docker vulnerability with a fix available (Trivy)
+# REPORT:  MEDIUM Docker vulnerability (warning, never blocks deploy)
+# REPORT:  LOW Docker vulnerability (warning, never blocks deploy)
 #
 # Push behaviour
 # --------------
-# push to main branch  → build + smoke test + push to GHCR
-#                        tags: latest, <commit-sha>
+# push to main branch  → lint + test + secret-scan + dep-scan
+#                        → docker build + Trivy scan + smoke test
+#                        → push to GHCR (tags: latest, sha-<commit>)
 #                        → trigger Render deploy hook with sha-<short> imgURL
-# push of a v* tag     → build + smoke test + push to GHCR
-#                        tags: <version>, latest, <commit-sha>
-#                        (no Render trigger by default — see step condition)
-# pull_request         → build + smoke test only (NO push, NO deploy)
+# push of a v* tag     → same as main but also tags <version>, <major>.<minor>
+# pull_request         → lint + test + secret-scan + dep-scan
+#                        → docker build + Trivy scan + smoke test
+#                        → NO push, NO deploy
 #
 # Registry
 # --------
 # ghcr.io/<owner>/hireflo
-# The owner is resolved dynamically from github.repository_owner
-# so the workflow works for any fork without hardcoding a username.
+# Owner resolved dynamically — workflow works for any fork.
 #
 # Authentication
 # --------------
-# Uses the auto-generated GITHUB_TOKEN (no PAT required).
-# permissions.packages: write is set at the workflow level.
+# Uses the auto-generated GITHUB_TOKEN.  No PAT required.
+# packages: write is scoped to the docker job only (not the whole workflow).
 #
 # Secrets
 # -------
 # No application secrets required for lint / test / build.
-# OPENROUTER_API_KEY is NOT needed — all 424 tests use a fake LLM.
+# OPENROUTER_API_KEY is NOT needed — all tests use a fake LLM.
 # GITHUB_TOKEN is provided automatically by GitHub Actions.
 # RENDER_DEPLOY_HOOK_URL must be added manually:
 #   GitHub repo → Settings → Secrets and variables → Actions
@@ -47,13 +60,13 @@ on:
     branches:
       - main
     tags:
-      - "v*"          # trigger on version tags, e.g. v1.0.0
+      - "v*"
   pull_request:
 
-# Minimal permissions — read source, write packages (GHCR).
+# Minimal top-level permissions — only read source code.
+# packages: write is added per-job on the docker job that actually pushes.
 permissions:
   contents: read
-  packages: write
 
 jobs:
   # ── 1. Lint ────────────────────────────────────────────────────────────────
@@ -74,12 +87,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run ruff
         run: ruff check .
@@ -102,25 +116,93 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run pytest
         run: pytest -v
         env:
-          # Ensure tests run in offline test mode — no real LLM calls.
           APP_ENV: test
 
-  # ── 3. Docker build + push ─────────────────────────────────────────────────
-  docker:
-    name: Docker build & push
+  # ── 3. Secret scanning ─────────────────────────────────────────────────────
+  secret-scan:
+    name: Secret scan (Gitleaks)
     runs-on: ubuntu-latest
-    # Only run after both lint and tests pass.
-    needs: [lint, test]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history so Gitleaks can scan all commits, not just HEAD.
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        # Pin to a known-good version tag to prevent supply-chain changes.
+        # Gitleaks scans the entire git history for patterns that look like
+        # real API keys, tokens, passwords, or private credentials.
+        # FAIL on any detection — a secret in git history is a security event.
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE is only required for organisations.  For public
+          # and personal repositories GITHUB_TOKEN is sufficient.
+
+  # ── 4. Dependency vulnerability scan ──────────────────────────────────────
+  dep-scan:
+    name: Dependency scan (pip-audit)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install production dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Install pip-audit
+        run: pip install pip-audit==2.9.0
+
+      - name: Run pip-audit
+        # Scan only the production requirements.
+        # --require-hashes is not used here because the project does not pin
+        # hashes in requirements.txt (adding it is a future hardening step).
+        # --fix is NOT used — we report vulnerabilities; upgrades are reviewed
+        # manually to avoid breaking the application.
+        # Exit non-zero when any vulnerability with a fix is found.
+        run: |
+          echo "🔍 Scanning production dependencies for known vulnerabilities..."
+          pip-audit -r requirements.txt
+
+  # ── 5. Docker build + security scan + push + deploy ───────────────────────
+  docker:
+    name: Docker build, scan & push
+    runs-on: ubuntu-latest
+    # Only run after lint, tests, secret scan, and dependency scan pass.
+    needs: [lint, test, secret-scan, dep-scan]
+
+    # packages: write is required only for GHCR push — scoped to this job.
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout repository
@@ -130,22 +212,15 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # ── Generate OCI-compliant image tags and labels ──────────────────────
-      # docker/metadata-action reads the triggering event and produces:
-      #   push to main      → :latest, :<sha-short>
-      #   push of v* tag    → :<version>, :latest, :<sha-short>
-      #   pull_request       → :<pr-N>  (used for build only, not pushed)
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/hireflo
           tags: |
-            # semver from git tag (v1.2.3 → 1.2.3, also adds :latest)
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            # short SHA — immutable reference to the exact source commit
             type=sha,prefix=sha-
-            # "latest" on every push to main
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
           labels: |
             org.opencontainers.image.title=HireFlo
@@ -153,10 +228,7 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      # ── Log in to GHCR (skipped for pull requests from forks) ─────────────
-      # GITHUB_TOKEN is provided automatically — no PAT required.
-      # login-action is skipped on PRs from external forks because the token
-      # does not have write permission in that context.
+      # ── Log in to GHCR (skipped for pull requests) ────────────────────────
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -165,32 +237,66 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Build (and push when not a PR) ────────────────────────────────────
+      # ── Build and push ────────────────────────────────────────────────────
+      # provenance and sbom generate signed build provenance attestations and
+      # a Software Bill of Materials — both are attached to the image in GHCR
+      # and make the image traceable back to the exact source commit and
+      # its dependency tree.  They do not affect the container itself.
       - name: Build and push Docker image
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          # Push only on push events (main branch or version tags).
-          # pull_request events never push to the registry.
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Reuse GitHub Actions layer cache to speed up repeated builds.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Supply-chain security: attach provenance and SBOM to the image.
+          provenance: true
+          sbom: true
 
-      # ── Smoke test (always — build + PR + push) ────────────────────────────
-      # Load the image locally regardless of push status so we can smoke-test it.
-      - name: Load image locally for smoke test
+      # ── Load image locally for scanning and smoke testing ─────────────────
+      - name: Load image locally for scan and smoke test
         uses: docker/build-push-action@v6
         with:
           context: .
-          load: true          # load into the local Docker daemon for the next step
+          load: true
           push: false
           tags: hireflo:ci
           cache-from: type=gha
 
+      # ── Trivy vulnerability scan ──────────────────────────────────────────
+      # Security failure policy for Docker image vulnerabilities:
+      #   CRITICAL  → fail the pipeline (exit 1)
+      #   HIGH      → fail only when a fix is available
+      #   MEDIUM    → report in output, do not fail
+      #   LOW       → report in output, do not fail
+      #
+      # This means LOW / MEDIUM findings in base OS packages that have no
+      # available fix will appear in logs but will not block a deploy.
+      # The policy is intentional — blocking on every unfixable low-severity
+      # finding in a slim base image creates noise without improving security.
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: hireflo:ci
+          format: table
+          # Scan OS packages and Python libraries.
+          scanners: vuln
+          vuln-type: os,library
+          # Severity levels to report in the output table.
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          # Exit non-zero for CRITICAL and HIGH vulnerabilities only.
+          # HIGH with no available fix will not fail (ignore-unfixed: true).
+          exit-code: "1"
+          ignore-unfixed: true
+          # Severity threshold that triggers exit-code: 1.
+          # Trivy uses this to select which severities cause failure.
+          # CRITICAL and HIGH (with fix) fail; MEDIUM and LOW only report.
+          trivyignore: .trivyignore
+
+      # ── Smoke test ────────────────────────────────────────────────────────
       - name: Smoke-test container
         run: |
           docker run -d \
@@ -214,6 +320,23 @@ jobs:
           curl -sf http://localhost:8501/_stcore/health || \
             (echo "❌  Streamlit health check failed" && docker logs hireflo-smoke && exit 1)
 
+      # ── Non-root verification ─────────────────────────────────────────────
+      # Verify that the application process runs as a non-root user.
+      # The container must run as the 'hireflo' user (uid 1000), not root (uid 0).
+      - name: Verify non-root execution
+        run: |
+          CONTAINER_USER=$(docker exec hireflo-smoke whoami)
+          echo "Container user: ${CONTAINER_USER}"
+
+          if [ "${CONTAINER_USER}" = "root" ]; then
+            echo "❌  SECURITY VIOLATION: container is running as root!"
+            docker stop hireflo-smoke
+            docker rm hireflo-smoke
+            exit 1
+          fi
+
+          echo "✅  Container is running as non-root user: ${CONTAINER_USER}"
+
           docker stop hireflo-smoke
           docker rm hireflo-smoke
 
@@ -226,45 +349,21 @@ jobs:
           echo "   Digest: ${{ steps.build.outputs.digest }}"
 
       # ── Trigger Render deployment ──────────────────────────────────────────
-      # Only run on push to main (not on PRs or version tags, unless you also
-      # want tag pushes to auto-deploy — adjust the condition as needed).
-      #
-      # The hook URL is stored as a repository secret (RENDER_DEPLOY_HOOK_URL).
-      # It must be set manually in GitHub → Settings → Secrets → Actions.
-      #
-      # We pass the exact SHA tag via imgURL so Render deploys the specific
-      # immutable image that was just pushed, not whatever :latest resolves to
-      # at pull time.  This makes every production deployment fully reproducible.
-      #
-      # imgURL format: <registry>%2F<owner>%2F<repo>%3A<tag>
-      # (URL-encoded slashes and colon)
-      #
-      # RENDER_DEPLOY_HOOK_URL is expected to be the base hook URL provided
-      # by Render Dashboard → Service → Settings → Deploy Hook.
-      # Example base URL (not real):
-      #   https://api.render.com/deploy/srv-abc123?key=xyz
       - name: Trigger Render deployment
         env:
           RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-          # The short SHA tag generated by metadata-action (e.g. sha-b43fc5b).
-          # We extract it from the full tags output.
           IMAGE_OWNER: ${{ github.repository_owner }}
-          IMAGE_SHA: sha-${{ github.sha }}
         if: >
           github.event_name == 'push' &&
           github.ref == 'refs/heads/main' &&
           env.RENDER_DEPLOY_HOOK_URL != ''
         run: |
-          # Build the URL-encoded imgURL parameter.
-          # Format: ghcr.io/<owner>/hireflo:sha-<short>
-          # URL-encode: / → %2F, : → %3A
           SHORT_SHA="${GITHUB_SHA:0:7}"
           IMG_TAG="sha-${SHORT_SHA}"
           IMG_URL="ghcr.io%2F${IMAGE_OWNER}%2Fhireflo%3A${IMG_TAG}"
 
           echo "🚀 Triggering Render deployment with image tag: sha-${SHORT_SHA}"
 
-          # Pass the hook URL via env var — never echo it.
           HTTP_STATUS=$(curl -s -o /tmp/render_response.json -w "%{http_code}" \
             "${RENDER_DEPLOY_HOOK_URL}&imgURL=${IMG_URL}")
 

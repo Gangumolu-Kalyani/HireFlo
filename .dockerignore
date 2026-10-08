@@ -51,6 +51,9 @@ logs
 # Tests — not needed at runtime
 tests
 
+# Development-only requirements — not needed in the production image
+requirements-dev.txt
+
 # Docs / CI helpers
 README.md
 wait_docker.sh

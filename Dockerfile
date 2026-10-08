@@ -48,8 +48,10 @@ RUN groupadd --gid 1000 hireflo \
 WORKDIR /app
 
 # ── Python dependencies ───────────────────────────────────────────────────────
-# Copy requirements first so Docker can cache this layer independently of
-# application code changes.
+# Only the production requirements file is copied into the image.
+# Development / test tools (pytest, ruff) live in requirements-dev.txt and are
+# intentionally excluded from the production image.
+# CI installs both: pip install -r requirements.txt -r requirements-dev.txt
 COPY requirements.txt ./
 
 RUN pip install --no-cache-dir --upgrade pip \

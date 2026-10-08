@@ -1,20 +1,31 @@
+# ============================================================
+# HireFlo — Production / runtime dependencies
+# ============================================================
+#
+# This file is installed in the Docker production image.
+# Development and test tools (pytest, ruff) go in requirements-dev.txt.
+# CI installs both: pip install -r requirements.txt -r requirements-dev.txt
+# ============================================================
+
 # Config / data validation
 pydantic==2.13.5
 pydantic-settings==2.15.0
 
-# LLM access (OpenRouter is OpenAI-compatible, so ChatOpenAI talks to it directly)
+# LLM access (OpenRouter is OpenAI-compatible; ChatOpenAI talks to it directly)
 langchain-core==1.6.6
 langchain-openai==1.6.7
 
-# Agent orchestration (Phase 4)
+# Agent orchestration
 langgraph==1.2.12
 
-# Streamlit UI (Phase 6)
-streamlit==1.45.1
+# Streamlit UI
+# 1.54.0: fixes PYSEC-2026-212 (>=1.53.1) and PYSEC-2026-2285 (>=1.54.0)
+streamlit==1.54.0
 
-# Production persistence (Phase 10)
+# Pillow — transitive dep of streamlit; pinned explicitly to enforce the
+# minimum secure version that resolves all PYSEC-2026-* CVEs.
+# pillow<11.3.0 and <12.x had multiple RCE/DoS vulnerabilities; 12.3.0 is clean.
+pillow==12.3.0
+
+# Production persistence (audit store — optional when DATABASE_URL is unset)
 psycopg[binary]==3.2.10
-
-# Dev / test
-pytest==9.1.1
-ruff==0.16.9
