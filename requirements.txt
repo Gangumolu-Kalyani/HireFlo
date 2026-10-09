@@ -29,3 +29,7 @@ pillow==12.3.0
 
 # Production persistence (audit store — optional when DATABASE_URL is unset)
 psycopg[binary]==3.2.10
+# Security fixes for transitive dependencies
+msgpack>=1.2.1
+setuptools>=83.0.0
+urllib3>=2.8.0

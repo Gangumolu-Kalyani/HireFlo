@@ -53,9 +53,13 @@ WORKDIR /app
 # intentionally excluded from the production image.
 # CI installs both: pip install -r requirements.txt -r requirements-dev.txt
 COPY requirements.txt ./
-
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --upgrade \
+       "msgpack>=1.2.1" \
+       "setuptools>=83.0.0" \
+       "urllib3>=2.8.0" \
+    && rm -f /usr/local/lib/python3.13/site-packages/pip/_vendor/bom.cdx.json
 
 # ── Application code ──────────────────────────────────────────────────────────
 COPY app/ ./app/
