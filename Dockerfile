@@ -85,6 +85,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
 # the shell at container startup.  Render injects a $PORT environment variable;
 # locally Docker uses the default of 8501.  Both cases work without any change
 # to the application code.
-CMD python -m streamlit run app/ui/streamlit_app.py \
-    --server.address 0.0.0.0 \
-    --server.port ${PORT:-8501}
+CMD ["sh", "-c", "exec streamlit run app/ui/streamlit_app.py --server.address=0.0.0.0 --server.port=${PORT:-8501}"]

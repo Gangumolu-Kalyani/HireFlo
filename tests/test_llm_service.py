@@ -42,7 +42,7 @@ def test_builds_openrouter_client_from_settings_without_network():
     model = _service(FAKE_KEY)._get_chat_model()
     assert isinstance(model, ChatOpenAI)
     assert model.openai_api_base == "https://openrouter.ai/api/v1"
-    assert model.model_name == "anthropic/claude-sonnet-5.5"
+    assert model.model_name == "nvidia/nemotron-3.5-lightning:free"
     assert FAKE_KEY not in repr(model)
 
 
