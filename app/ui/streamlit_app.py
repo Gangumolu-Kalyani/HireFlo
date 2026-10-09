@@ -43,6 +43,10 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+import streamlit as st
+
+from app.observability.logging_config import get_logger, setup_logging
+
 # Ensure the project root (the directory containing 'app/') is on sys.path so
 # that `from app.*` imports work regardless of which directory Streamlit is
 # launched from (e.g. `streamlit run app/ui/streamlit_app.py` from any CWD).
@@ -50,9 +54,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-import streamlit as st
 
-from app.observability.logging_config import get_logger, setup_logging
 
 # ── Production Logging ────────────────────────────────────────────────────────
 setup_logging()

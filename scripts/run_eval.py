@@ -1,9 +1,10 @@
 """One-shot evaluation script for Aarav Sharma vs Junior AI/ML Engineer JD."""
 import sys
-import json
-sys.stdout.reconfigure(encoding="utf-8")
-from app.agent.runner import run_recruitment, approve_interview
+
+from app.agent.runner import run_recruitment
 from app.models import ScoringCriterion
+
+sys.stdout.reconfigure(encoding="utf-8")
 
 RESUME = """Aarav Sharma
 Hyderabad, India
