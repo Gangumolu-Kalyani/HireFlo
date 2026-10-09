@@ -39,7 +39,12 @@ def test_missing_api_key_raises_config_error():
 
 
 def test_builds_openrouter_client_from_settings_without_network():
-    model = _service(FAKE_KEY)._get_chat_model()
+    settings = Settings(
+        _env_file=None,
+        openrouter_api_key=FAKE_KEY,
+        llm_model="nvidia/nemotron-3.5-lightning:free",
+    )
+    model = LLMService(settings=settings)._get_chat_model()
     assert isinstance(model, ChatOpenAI)
     assert model.openai_api_base == "https://openrouter.ai/api/v1"
     assert model.model_name == "nvidia/nemotron-3.5-lightning:free"

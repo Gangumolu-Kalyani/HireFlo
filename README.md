@@ -8,7 +8,7 @@ scores candidates against a JD-based rubric with evidence, ranks them, and propo
 
 [![CI](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/ci.yml/badge.svg)](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/ci.yml)
 [![Release](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/release.yml/badge.svg)](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/release.yml)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://github.com/Gangumolu-Kalyani/HireFlo/pkgs/container/hireflo)
 
 ---
@@ -448,7 +448,7 @@ attached as an OCI artifact.
 
 - **Non-root user**: The container runs as the `hireflo` user (UID 1000). The
   CI pipeline explicitly verifies this with an automated smoke test step.
-- **Image minimization**: The production image uses `python:3.12-slim` and
+- **Image minimization**: The production image uses `python:3.13-slim` and
   excludes all development tools (`ruff`, `pytest`) and tests.
 - **Dependency isolation**: `requirements.txt` (production) is strictly
   separated from `requirements-dev.txt` (development/testing).
@@ -1081,7 +1081,7 @@ lints, tests, and builds the application on every push.
 
 ### Dockerfile
 
-`python:3.12-slim` base image — matches the project's Python version exactly.
+`python:3.13-slim` base image — matches the project's Python version exactly.
 
 Key decisions:
 
@@ -1838,7 +1838,7 @@ logged, and `.env` is gitignored.
 
 - Windows with WSL2 (Ubuntu) — all commands below run **inside WSL**
 - Python 3.11+ (`python3 --version`)
-- `python3-venv` (`sudo apt install python3.12-venv`)
+- `python3-venv` (`sudo apt install python3.13-venv`)
 - Docker Desktop with WSL integration enabled (needed from Phase 8)
 
 ## Setup

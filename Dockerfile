@@ -4,7 +4,7 @@
 #
 # Stages
 # ------
-# (single stage — slim Python 3.12 is small enough)
+# (single stage — slim Python 3.13 is small enough)
 #
 # Runtime
 # -------
@@ -21,7 +21,7 @@
 # ============================================================
 
 # ── Base image ────────────────────────────────────────────────────────────────
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 # ── Build-time metadata ───────────────────────────────────────────────────────
 # Static labels baked into every build (local and CI).
