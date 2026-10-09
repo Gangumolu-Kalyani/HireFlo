@@ -37,9 +37,18 @@ main            — page assembly
 
 from __future__ import annotations
 
+import sys
 import time
 import traceback
+from pathlib import Path
 from typing import Any
+
+# Ensure the project root (the directory containing 'app/') is on sys.path so
+# that `from app.*` imports work regardless of which directory Streamlit is
+# launched from (e.g. `streamlit run app/ui/streamlit_app.py` from any CWD).
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 import streamlit as st
 

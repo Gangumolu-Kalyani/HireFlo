@@ -1,0 +1,11 @@
+[project]
+name = "hireflo"
+version = "1.0.0"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+# ruff.toml is the primary config; this just keeps pyproject.toml consistent.
