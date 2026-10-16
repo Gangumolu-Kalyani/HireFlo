@@ -34,10 +34,13 @@ LABEL org.opencontainers.image.title="HireFlo"
 LABEL org.opencontainers.image.description="AI Recruitment Agent — LangGraph + Streamlit"
 
 # ── System dependencies ───────────────────────────────────────────────────────
-# curl is needed for the HEALTHCHECK only.
-# --no-install-recommends keeps the layer slim.
+# curl is NOT installed — it introduced 6 HIGH CVEs (libcurl4t64, e.g.
+# CVE-2026-92392) and was only used for the HEALTHCHECK.  The HEALTHCHECK
+# below uses Python's stdlib urllib instead (Python is already in this image).
+# apt-get upgrade ensures all other base-image packages are at their latest
+# patched versions.  No extra packages are installed.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Non-root user ─────────────────────────────────────────────────────────────
@@ -80,10 +83,12 @@ ENV STREAMLIT_SERVER_HEADLESS=true
 EXPOSE 8501
 
 # ── Healthcheck ───────────────────────────────────────────────────────────────
-# Streamlit exposes a /_stcore/health endpoint.
-# --start-period gives the app time to initialise before the first check.
+# Uses Python's stdlib urllib — no curl required (and curl is not installed).
+# urllib.request.urlopen raises an exception on any non-2xx response, which
+# causes the python3 process to exit non-zero, failing the health check.
+# --start-period gives Streamlit time to initialise before the first check.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+    CMD python3 -c "import urllib.request, sys; urllib.request.urlopen('http://localhost:8501/_stcore/health'); sys.exit(0)" || exit 1
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 # Shell form (not exec form) is required so that ${PORT:-8501} is expanded by
