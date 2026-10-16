@@ -332,12 +332,38 @@ def _render_input_section() -> tuple[str, str]:
                 st.error("⚠️  Could not extract text from the uploaded file.")
 
     st.header("📋 Job Description")
-    job_description = st.text_area(
-        "Enter the job description",
-        height=150,
-        placeholder="Senior Python Backend Engineer\n\nRequirements:\n- 4+ years Python...",
-        key="jd_text",
+
+    jd_input_mode = st.radio(
+        "Job description input method",
+        ["Paste text", "Upload file (.txt or .pdf)"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="jd_input_mode",
     )
+
+    job_description = ""
+
+    if jd_input_mode == "Paste text":
+        job_description = st.text_area(
+            "Enter the job description",
+            height=150,
+            placeholder="Senior Python Backend Engineer\n\nRequirements:\n- 4+ years Python...",
+            key="jd_text",
+        )
+    else:
+        jd_uploaded = st.file_uploader(
+            "Upload job description",
+            type=["txt", "pdf"],
+            help="Plain text (.txt) or PDF (.pdf).",
+            key="jd_upload",
+        )
+        if jd_uploaded is not None:
+            job_description = _extract_text_from_upload(jd_uploaded)
+            if job_description:
+                with st.expander("Preview extracted text", expanded=False):
+                    st.text(job_description[:2000] + ("…" if len(job_description) > 2000 else ""))
+            else:
+                st.error("⚠️  Could not extract text from the uploaded file.")
 
     return resume_text, job_description
 
