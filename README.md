@@ -1,15 +1,324 @@
+<div align="center">
+
 # HireFlo — AI Recruitment Agent
 
-An AI-powered recruitment agent (LangGraph + OpenRouter) that parses a job description and resumes,
-scores candidates against a JD-based rubric with evidence, ranks them, and proposes interviews —
-**always behind a human approval gate**.
-
-> Status: **Phase 12 — Final CI/CD & Release Engineering COMPLETE.**
+**Evidence-based candidate screening with LangGraph, guardrails, and a mandatory human approval gate.**
 
 [![CI](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/ci.yml/badge.svg)](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/ci.yml)
 [![Release](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/release.yml/badge.svg)](https://github.com/Gangumolu-Kalyani/HireFlo/actions/workflows/release.yml)
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://github.com/Gangumolu-Kalyani/HireFlo/pkgs/container/hireflo)
+![LangGraph](https://img.shields.io/badge/orchestration-LangGraph-1c3c3c.svg)
+![Streamlit](https://img.shields.io/badge/UI-Streamlit-ff4b4b.svg)
+![Security](https://img.shields.io/badge/security-Trivy%20%7C%20Gitleaks%20%7C%20pip--audit-success.svg)
+
+</div>
+
+An AI-powered recruitment agent (LangGraph + OpenRouter) that parses a job description and resumes,
+scores candidates against a JD-based rubric with evidence, ranks them, and proposes interviews — **always behind a human approval gate**.
+
+> Status: **Phase 12 — Final CI/CD & Release Engineering COMPLETE.**
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Tech Stack](#tech-stack)
+- [How It Works](#how-it-works)
+- [Quick Start](#quick-start)
+- [Getting Started (Local Development)](#getting-started-local-development)
+  - [Prerequisites](#prerequisites)
+  - [Setup](#setup)
+  - [Running tests and lint](#running-tests-and-lint)
+  - [Trying the parsers against the real LLM](#trying-the-parsers-against-the-real-llm)
+- [Configuration](#configuration)
+- [Project structure](#project-structure)
+- [Roadmap](#roadmap)
+- [Development Phases (Detailed Documentation)](#development-phases-detailed-documentation)
+  - [Phase 12 — Final CI/CD & Release Engineering](#what-phase-12-implements)
+  - [Phase 11 — Production Security & Hardening](#what-phase-11-implements)
+  - [Phase 10 — Monitoring / Observability](#what-phase-10-implements)
+  - [Phase 9 — CD / Deployment (Render)](#what-phase-9-implements)
+  - [Phase 8 — Container Registry (GHCR)](#what-phase-8-implements)
+  - [Phase 7 — Docker + GitHub Actions CI](#what-phase-7-implements)
+  - [Phase 6 — Streamlit UI](#what-phase-6-implements)
+  - [Phase 5 — Guardrails and Human Approval](#what-phase-5-implements)
+  - [Phase 4 — LangGraph State and Workflow](#what-phase-4-implements)
+  - [Phase 3 — Agent Tools](#what-phase-3-implements)
+  - [Phase 2 — Building Blocks](#what-phase-2-implements)
+  - [Security: resume text is untrusted input](#security-resume-text-is-untrusted-input)
+- [Contributing](#contributing)
+
+---
+
+## Overview
+
+Screening resumes is repetitive, subjective, and risky to automate blindly. **HireFlo** automates the
+mechanical parts of screening while keeping a human in control of every consequential decision:
+
+1. An HR reviewer provides a **job description** and a **resume** (pasted text, `.txt`, or `.pdf`).
+2. The agent **parses** the resume into a structured profile and **scores** it against a weighted rubric,
+   citing evidence from the resume for every criterion.
+3. **Guardrails** defend against prompt injection, validate LLM output, and audit the evidence for fairness.
+4. Qualifying candidates get an **interview proposal** — which stays `PENDING_APPROVAL` until a human
+   clicks **Approve** or **Reject** in the dashboard.
+
+Design principles:
+
+- **Resumes are untrusted data, never instructions.**
+- **Python decides, the LLM suggests.** Weighted scores, threshold routing, and score ranges are computed in code.
+- **No autonomous actions.** No email is sent and no calendar event is created without human approval.
+- **Auditable by default.** Every workflow step is recorded in an operational trajectory — without storing raw resumes or LLM reasoning.
+
+---
+
+## Key Features
+
+| Area | Capability |
+|---|---|
+| **Parsing** | Structured `CandidateProfile` / `JobDescription` extraction through a single `LLMService` interface |
+| **Scoring** | Per-criterion 0–5 scores with resume evidence; weighted score computed in Python, never by the LLM |
+| **Fairness** | Protected attributes excluded from the scoring prompt; evidence audited for prohibited references |
+| **Guardrails** | Prompt-injection detection, input validation, LLM output validation, severity-based blocking |
+| **Human-in-the-loop** | LangGraph `interrupt()` pauses the workflow at an approval gate; resumable via checkpointer |
+| **Dashboard** | Streamlit HR UI with score display, evidence panels, guardrail badges, and audit trail |
+| **Security** | Gitleaks, pip-audit, Trivy, non-root container, SBOM + provenance, `SecretStr` secrets |
+| **Release engineering** | Semantic versioning, immutable image tags, GitHub Releases, health-verified deploys, rollback runbook |
+| **Observability** | CI monitoring scripts, production smoke test, optional PostgreSQL `AuditStore` |
+| **Testing** | 424 tests with a fake LLM — no API key or internet required |
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Language | Python 3.13 |
+| Agent orchestration | LangGraph (`StateGraph`, `interrupt()`, `MemorySaver`) |
+| LLM access | LangChain `ChatOpenAI` via OpenRouter (default model: `anthropic/claude-sonnet-5.5`) |
+| Data models / settings | Pydantic (`SecretStr` for secrets) |
+| UI | Streamlit |
+| Persistence (optional) | PostgreSQL (`psycopg`) — `AuditStore` |
+| Testing / linting | Pytest, Ruff |
+| Containers | Docker (`python:3.13-slim`, non-root), GHCR |
+| CI/CD | GitHub Actions (`ci.yml`, `release.yml`) |
+| Security scanning | Gitleaks, pip-audit, Trivy, BuildKit Provenance + SBOM |
+| Deployment | Render (image-backed web service via deploy hook) |
+
+---
+
+## How It Works
+
+```
+Resume + JD
+      │
+      ▼
+INPUT GUARDRAIL ──► (HIGH severity) ──► GUARDRAIL_BLOCKED
+      │
+      ▼
+parse_resume ──► score_candidate ──► OUTPUT VALIDATION ──► FAIRNESS CHECK
+                                                                 │
+                                          score < threshold ◄────┤────► score ≥ threshold
+                                                  │                          │
+                                     REJECTED_BY_THRESHOLD         check_availability
+                                                                             │
+                                                                   propose_interview
+                                                                             │
+                                                                   BUILD HUMAN REVIEW
+                                                                             │
+                                                                  HUMAN APPROVAL GATE
+                                                                      (interrupt)
+                                                                    /            \
+                                                               APPROVED        REJECTED
+```
+
+The full node-by-node workflow is documented in [Phase 4](#what-phase-4-implements) and
+[Phase 5](#what-phase-5-implements). The delivery pipeline (CI → GHCR → Render → GitHub Release) is documented in
+[Phase 12](#what-phase-12-implements).
+
+---
+
+## Quick Start
+
+**Run the published container** (requires Docker and an OpenRouter API key):
+
+```bash
+cp .env.example .env            # then set OPENROUTER_API_KEY=sk-or-...
+docker run --rm -p 8501:8501 --env-file .env ghcr.io/gangumolu-kalyani/hireflo:latest
+```
+
+Open `http://localhost:8501`. For a pinned, reproducible version, use a release tag such as
+`ghcr.io/gangumolu-kalyani/hireflo:v1.0.0` instead of `latest`
+(see [Pulling an image from GHCR](#pulling-an-image-from-ghcr) if the package is private).
+
+**Run from source:** follow [Getting Started](#getting-started-local-development) below.
+
+---
+
+## Getting Started (Local Development)
+
+### Prerequisites
+
+- Windows with WSL2 (Ubuntu) — all commands below run **inside WSL**
+- Python 3.11+ (`python3 --version`)
+- `python3-venv` (`sudo apt install python3.13-venv`)
+- Docker Desktop with WSL integration enabled (needed from Phase 8)
+
+### Setup
+
+```bash
+# 1. Open an Ubuntu (WSL) terminal and go to the project
+cd /mnt/c/HireFlo
+
+# 2. Create (first time only) and activate the virtual environment
+python3 -m venv .venv
+source .venv/bin/activate          # your prompt now starts with (.venv); `deactivate` to leave
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Configure environment variables
+cp .env.example .env
+nano .env                          # set OPENROUTER_API_KEY=sk-or-...
+```
+
+`.env` is gitignored — never commit it. Get a key at https://openrouter.ai/keys.
+
+To launch the dashboard:
+
+```bash
+streamlit run app/ui/streamlit_app.py
+```
+
+The UI opens at `http://localhost:8501` (see [Phase 6](#what-phase-6-implements) for details).
+
+For development and testing, also install the dev dependencies:
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+### Running tests and lint
+
+```bash
+pytest -v          # all tests use a fake LLM: no API key or internet needed
+ruff check .       # lint
+```
+
+### Trying the parsers against the real LLM
+
+Requires `OPENROUTER_API_KEY` in `.env` (this makes real, billed API calls):
+
+```bash
+python -m app.services.job_parser tests/data/sample_job.txt
+python -m app.services.resume_parser tests/data/sample_resume.txt
+```
+
+Or from Python:
+
+```python
+from app.services.resume_parser import parse_resume
+profile = parse_resume(open("tests/data/sample_resume.txt").read())
+print(profile.model_dump_json(indent=2))
+```
+
+---
+
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `APP_ENV` | `development` | `development` / `test` / `production` |
+| `LOG_LEVEL` | `INFO` | Logging level |
+| `OPENROUTER_API_KEY` | — | OpenRouter API key (required for real LLM calls) |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter endpoint |
+| `LLM_MODEL` | `anthropic/claude-sonnet-5.5` | Model ID on OpenRouter (must support tool calling) |
+| `AGENT_MAX_ITERATIONS` | `10` | Hard cap on agent loop steps (1–50) |
+
+Optional: `DATABASE_URL` enables the PostgreSQL-backed `AuditStore` (see [Phase 10](#what-phase-10-implements)).
+Deployment-specific variables are listed under [Environment variables](#environment-variables).
+
+---
+
+## Project structure
+
+```
+.github/
+  workflows/             ci.yml (lint, test, scans, build, push, deploy) and release.yml (tagged releases)
+app/
+  config.py              settings from env / .env
+  models/                Pydantic models (job, candidate, scoring, guardrails)
+    guardrail_models.py  GuardrailResult, HumanReview
+  services/              llm_service, resume_parser, job_parser
+  tools/                 four LangChain tools (Phase 3)
+    __init__.py          exports parse_resume, score_candidate, check_availability, propose_interview
+    resume_tool.py       thin wrapper around resume_parser service
+    scoring_tool.py      LLM scores criteria; Python computes weighted score
+    availability_tool.py deterministic fake calendar (SHA-256 based)
+    interview_tool.py    PENDING_APPROVAL proposal only — no booking
+  guardrails/            Phase 5 guardrail modules
+    __init__.py          exports detect_injection, validate_input, validate_scoring_output, check_scoring_fairness
+    injection.py         prompt-injection pattern detector
+    input_guard.py       input validation (empty, oversized, injection)
+    output_guard.py      LLM output validation (scores, evidence, criteria)
+    fairness.py          fairness attribute checks on scoring evidence
+  agent/                 LangGraph recruitment agent (Phase 4 + 5)
+    __init__.py          exports build_graph
+    state.py             RecruitmentState TypedDict + TrajectoryEntry
+    graph.py             StateGraph — 12 nodes, conditional edges, interrupt, guardrails
+    runner.py            run_recruitment(), approve_interview(), reject_interview()
+  ui/                    Streamlit HR dashboard (Phase 6)
+    __init__.py
+    streamlit_app.py     main entry point — presentation/controller layer only
+scripts/
+  smoke_test_prod.py     stdlib-only production health smoke test (Phase 12)
+tests/
+  data/                  fictional sample JD, resume, and a prompt-injection resume
+  conftest.py            FakeLLMService + fixtures
+  test_*.py
+  test_ui.py             UI-focused tests (15 test classes, no real LLM)
+monitor_ci.py            poll GitHub Actions build status (Phase 10)
+get_logs.py              fetch recent logs (Phase 10)
+get_annotations.py       extract check annotations from runs (Phase 10)
+check_failure.py         summarise why a pipeline failed (Phase 10)
+Dockerfile               production image (python:3.13-slim, non-root)
+.dockerignore            build-context exclusions (no secrets, tests, or VCS data)
+render.yaml              Render service blueprint (no secret values)
+.trivyignore             documented Trivy exceptions (with justification + review date)
+hireflo-sbom.json        Software Bill of Materials
+RELEASE.md               release process and rollback runbook
+pyproject.toml           project metadata / tool configuration
+ruff.toml                Ruff lint configuration
+.env.example             environment variable template
+requirements.txt         production dependencies
+requirements-dev.txt     development dependencies (pytest, ruff)
+```
+
+---
+
+## Roadmap
+
+1. ✅ Project foundation
+2. ✅ Basic recruitment agent building blocks
+3. ✅ Agent tools
+4. ✅ LangGraph state and workflow
+5. ✅ Guardrails and human approval
+6. ✅ Streamlit UI
+7. ✅ Docker + GitHub Actions CI
+8. ✅ Container registry (GHCR)
+9. ✅ CD / deployment (Render)
+10. ✅ Monitoring / observability
+11. ✅ Production security & hardening
+12. ✅ Final CI/CD & release engineering
+
+---
+
+## Development Phases (Detailed Documentation)
+
+HireFlo was built incrementally in twelve phases. The sections below document what each phase
+implemented, newest first.
 
 ---
 
@@ -1834,115 +2143,17 @@ These are mitigations, not guarantees; Phase 5 adds injection detection and outp
 Secrets: API keys are read only from `.env` / environment variables, stored as `SecretStr`, never
 logged, and `.env` is gitignored.
 
-## Prerequisites
+---
 
-- Windows with WSL2 (Ubuntu) — all commands below run **inside WSL**
-- Python 3.11+ (`python3 --version`)
-- `python3-venv` (`sudo apt install python3.13-venv`)
-- Docker Desktop with WSL integration enabled (needed from Phase 8)
+## Contributing
 
-## Setup
+Contributions and suggestions are welcome. Before opening a pull request:
 
-```bash
-# 1. Open an Ubuntu (WSL) terminal and go to the project
-cd /mnt/c/HireFlo
+1. Create a feature branch from `main`.
+2. Install dev dependencies: `pip install -r requirements.txt -r requirements-dev.txt`.
+3. Make sure `ruff check .` and `pytest -v` both pass — CI enforces them, along with secret, dependency, and container scans.
+4. Never commit secrets. `.env` is gitignored; use `.env.example` as the template.
+5. Follow [Semantic Versioning](#versioning-strategy) for releases and see [RELEASE.md](RELEASE.md) for the release process.
 
-# 2. Create (first time only) and activate the virtual environment
-python3 -m venv .venv
-source .venv/bin/activate          # your prompt now starts with (.venv); `deactivate` to leave
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Configure environment variables
-cp .env.example .env
-nano .env                          # set OPENROUTER_API_KEY=sk-or-...
-```
-
-`.env` is gitignored — never commit it. Get a key at https://openrouter.ai/keys.
-
-## Running tests and lint
-
-```bash
-pytest -v          # all tests use a fake LLM: no API key or internet needed
-ruff check .       # lint
-```
-
-## Trying the parsers against the real LLM
-
-Requires `OPENROUTER_API_KEY` in `.env` (this makes real, billed API calls):
-
-```bash
-python -m app.services.job_parser tests/data/sample_job.txt
-python -m app.services.resume_parser tests/data/sample_resume.txt
-```
-
-Or from Python:
-
-```python
-from app.services.resume_parser import parse_resume
-profile = parse_resume(open("tests/data/sample_resume.txt").read())
-print(profile.model_dump_json(indent=2))
-```
-
-## Project structure
-
-```
-app/
-  config.py              settings from env / .env
-  models/                Pydantic models (job, candidate, scoring, guardrails)
-    guardrail_models.py  GuardrailResult, HumanReview
-  services/              llm_service, resume_parser, job_parser
-  tools/                 four LangChain tools (Phase 3)
-    __init__.py          exports parse_resume, score_candidate, check_availability, propose_interview
-    resume_tool.py       thin wrapper around resume_parser service
-    scoring_tool.py      LLM scores criteria; Python computes weighted score
-    availability_tool.py deterministic fake calendar (SHA-256 based)
-    interview_tool.py    PENDING_APPROVAL proposal only — no booking
-  guardrails/            Phase 5 guardrail modules
-    __init__.py          exports detect_injection, validate_input, validate_scoring_output, check_scoring_fairness
-    injection.py         prompt-injection pattern detector
-    input_guard.py       input validation (empty, oversized, injection)
-    output_guard.py      LLM output validation (scores, evidence, criteria)
-    fairness.py          fairness attribute checks on scoring evidence
-  agent/                 LangGraph recruitment agent (Phase 4 + 5)
-    __init__.py          exports build_graph
-    state.py             RecruitmentState TypedDict + TrajectoryEntry
-    graph.py             StateGraph — 12 nodes, conditional edges, interrupt, guardrails
-    runner.py            run_recruitment(), approve_interview(), reject_interview()
-  ui/                    Streamlit HR dashboard (Phase 6)
-    __init__.py
-    streamlit_app.py     main entry point — presentation/controller layer only
-tests/
-  data/                  fictional sample JD, resume, and a prompt-injection resume
-  conftest.py            FakeLLMService + fixtures
-  test_*.py
-  test_ui.py             UI-focused tests (15 test classes, no real LLM)
-.env.example             environment variable template
-requirements.txt
-```
-
-## Configuration
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `APP_ENV` | `development` | `development` / `test` / `production` |
-| `LOG_LEVEL` | `INFO` | Logging level |
-| `OPENROUTER_API_KEY` | — | OpenRouter API key (required for real LLM calls) |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter endpoint |
-| `LLM_MODEL` | `anthropic/claude-sonnet-5.5` | Model ID on OpenRouter (must support tool calling) |
-| `AGENT_MAX_ITERATIONS` | `10` | Hard cap on agent loop steps (1–50) |
-
-## Roadmap
-
-1. ✅ Project foundation
-2. ✅ Basic recruitment agent building blocks
-3. ✅ Agent tools
-4. ✅ LangGraph state and workflow
-5. ✅ Guardrails and human approval
-6. ✅ Streamlit UI
-7. ✅ Docker + GitHub Actions CI
-8. ✅ Container registry (GHCR)
-9. ✅ CD / deployment (Render)
-10. ✅ Monitoring / observability
-11. ✅ Production security & hardening
+> HireFlo assists human reviewers — it does not replace them. Any change that would let the agent
+> book interviews, send messages, or act on candidate text without explicit human approval will not be accepted.
