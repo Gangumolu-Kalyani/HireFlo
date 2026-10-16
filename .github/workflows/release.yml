@@ -249,17 +249,39 @@ jobs:
       # ── Trivy vulnerability scan ──────────────────────────────────────────
       # A release must not be published if CRITICAL or HIGH (fixable) vulns
       # are found.  This scan runs on the locally-loaded image BEFORE push.
-      - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@0.30.0
+      #
+      # IMPORTANT: severity must match exactly the levels that should trigger
+      # exit-code: 1.  Setting severity: CRITICAL,HIGH,MEDIUM,LOW with
+      # exit-code: 1 would fail on MEDIUM/LOW — contrary to the policy.
+      # Use a second report-only step for MEDIUM/LOW visibility.
+      - name: Scan image with Trivy (fail on CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: hireflo:release
           format: table
           scanners: vuln
           vuln-type: os,library
-          severity: CRITICAL,HIGH,MEDIUM,LOW
+          # Only CRITICAL and HIGH trigger a failure.
+          # HIGH without a fix does NOT fail (ignore-unfixed: true).
+          severity: CRITICAL,HIGH
           exit-code: "1"
           ignore-unfixed: true
           trivyignore: .trivyignore
+
+      # ── Trivy report-only scan (MEDIUM/LOW — informational only) ──────────
+      - name: Scan image with Trivy (report MEDIUM/LOW, no fail)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: hireflo:release
+          format: table
+          scanners: vuln
+          vuln-type: os,library
+          severity: MEDIUM,LOW
+          exit-code: "0"
+          ignore-unfixed: true
+          trivyignore: .trivyignore
+          skip-setup-trivy: true
 
       # ── Docker smoke test ─────────────────────────────────────────────────
       - name: Smoke-test release image

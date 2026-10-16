@@ -269,15 +269,16 @@ jobs:
       # ── Trivy vulnerability scan ──────────────────────────────────────────
       # Security failure policy for Docker image vulnerabilities:
       #   CRITICAL  → fail the pipeline (exit 1)
-      #   HIGH      → fail only when a fix is available
-      #   MEDIUM    → report in output, do not fail
-      #   LOW       → report in output, do not fail
+      #   HIGH      → fail only when a fix is available (ignore-unfixed: true)
+      #   MEDIUM    → report in a separate step below, do not fail
+      #   LOW       → report in a separate step below, do not fail
       #
-      # This means LOW / MEDIUM findings in base OS packages that have no
-      # available fix will appear in logs but will not block a deploy.
-      # The policy is intentional — blocking on every unfixable low-severity
-      # finding in a slim base image creates noise without improving security.
-      - name: Scan Docker image with Trivy
+      # IMPORTANT: severity here must match the severities that should trigger
+      # exit-code: 1.  If severity: CRITICAL,HIGH,MEDIUM,LOW is set alongside
+      # exit-code: 1, Trivy will exit 1 on ANY finding — including MEDIUM/LOW
+      # which is contrary to the intended policy.  Set severity to exactly the
+      # levels that should cause a failure.
+      - name: Scan Docker image with Trivy (fail on CRITICAL/HIGH)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: hireflo:ci
@@ -285,16 +286,31 @@ jobs:
           # Scan OS packages and Python libraries.
           scanners: vuln
           vuln-type: os,library
-          # Severity levels to report in the output table.
-          severity: CRITICAL,HIGH,MEDIUM,LOW
-          # Exit non-zero for CRITICAL and HIGH vulnerabilities only.
-          # HIGH with no available fix will not fail (ignore-unfixed: true).
+          # Only CRITICAL and HIGH are scanned in this failing step.
+          # exit-code: 1 fires only when these severities are found.
+          # HIGH without an available fix does NOT fail (ignore-unfixed: true).
+          severity: CRITICAL,HIGH
           exit-code: "1"
           ignore-unfixed: true
-          # Severity threshold that triggers exit-code: 1.
-          # Trivy uses this to select which severities cause failure.
-          # CRITICAL and HIGH (with fix) fail; MEDIUM and LOW only report.
           trivyignore: .trivyignore
+
+      # ── Trivy report-only scan (MEDIUM / LOW — informational only) ────────
+      # This step reports MEDIUM and LOW findings for visibility but never
+      # blocks the pipeline.  It runs after the failing step so that a
+      # CRITICAL/HIGH finding is caught first and reported clearly.
+      - name: Scan Docker image with Trivy (report MEDIUM/LOW, no fail)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: hireflo:ci
+          format: table
+          scanners: vuln
+          vuln-type: os,library
+          severity: MEDIUM,LOW
+          exit-code: "0"
+          ignore-unfixed: true
+          trivyignore: .trivyignore
+          skip-setup-trivy: true
 
       # ── Smoke test ────────────────────────────────────────────────────────
       - name: Smoke-test container
