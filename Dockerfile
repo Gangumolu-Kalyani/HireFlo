@@ -46,6 +46,7 @@ RUN groupadd --gid 1000 hireflo \
 
 # ── Working directory ─────────────────────────────────────────────────────────
 WORKDIR /app
+ENV PYTHONPATH=/app
 
 # ── Python dependencies ───────────────────────────────────────────────────────
 # Only the production requirements file is copied into the image.
