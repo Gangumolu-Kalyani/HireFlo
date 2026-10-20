@@ -161,12 +161,34 @@ Open `http://localhost:8501`. For a pinned, reproducible version, use a release 
 
 ### Prerequisites
 
-- Windows with WSL2 (Ubuntu) — all commands below run **inside WSL**
-- Python 3.11+ (`python3 --version`)
-- `python3-venv` (`sudo apt install python3.13-venv`)
-- Docker Desktop with WSL integration enabled (needed from Phase 8)
+- Python 3.13 (`python --version`)
+- Docker Desktop (needed from Phase 8)
+- An OpenRouter API key — get one at https://openrouter.ai/keys
+
+The project works on **Windows (PowerShell / CMD)** natively and inside **WSL2 (Ubuntu)**.
 
 ### Setup
+
+**Windows (PowerShell):**
+
+```powershell
+# 1. Go to the project directory
+cd C:\HireFlo
+
+# 2. Create (first time only) and activate the virtual environment
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+& .venv\Scripts\Activate.ps1      # your prompt now shows (.venv); run `deactivate` to leave
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Configure environment variables
+copy .env.example .env
+notepad .env                       # set OPENROUTER_API_KEY=sk-or-...
+```
+
+**WSL2 (Ubuntu):**
 
 ```bash
 # 1. Open an Ubuntu (WSL) terminal and go to the project
@@ -184,7 +206,7 @@ cp .env.example .env
 nano .env                          # set OPENROUTER_API_KEY=sk-or-...
 ```
 
-`.env` is gitignored — never commit it. Get a key at https://openrouter.ai/keys.
+`.env` is gitignored — never commit it.
 
 To launch the dashboard:
 
@@ -1669,8 +1691,8 @@ An expandable **Audit Trail** section shows every operational step from
 
 ```
 1. ▶️  Step 1 — input_guardrail — COMPLETED
-2. ✅  Step 2 — parse_resume — COMPLETED  (name=Alex Rivera)
-3. ✅  Step 3 — score_candidate — COMPLETED  (weighted_score=4.2)
+2. ✅  Step 2 — parse_resume — COMPLETED  (name=Alex Rivera, phone=+1 (555) 014-7823)
+3. ✅  Step 3 — score_candidate — COMPLETED  (weighted_score=4.7)
 4. ✅  Step 4 — output_validation — COMPLETED
 5. ✅  Step 5 — fairness_check — COMPLETED
 6. ✅  Step 6 — check_availability — COMPLETED

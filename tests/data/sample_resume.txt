@@ -1,22 +1,52 @@
 Alex Rivera
 alex.rivera@example.com
++1 (555) 014-7823
 
 SUMMARY
-Backend engineer with 5 years of experience building Python web services.
+Backend engineer with 6 years of professional experience designing and scaling Python web
+services. Specialises in FastAPI and Django REST APIs, PostgreSQL, and cloud-native
+deployment with Docker and GitHub Actions CI/CD. Recent work includes integrating LLM
+pipelines using LangChain and building automated test suites to maintain high code quality.
 
 SKILLS
-Python, FastAPI, Django, PostgreSQL, Docker, GitHub Actions, AWS
+Languages  : Python (advanced), SQL, Bash
+Frameworks : FastAPI, Django, Django REST Framework, Pydantic
+Databases  : PostgreSQL, Redis, SQLite
+DevOps     : Docker, GitHub Actions, AWS (EC2, RDS, S3), GCP (Cloud Run)
+AI/ML      : LangChain, OpenAI API, vector embeddings
+Testing    : pytest, unittest, coverage.py
+Other      : Git, REST API design, OpenAPI/Swagger, code review
 
 EXPERIENCE
-Backend Engineer - Example Corp (2021 - present)
-- Built REST APIs in FastAPI serving 2M requests/day
-- Containerised services with Docker and set up CI with GitHub Actions
+Senior Backend Engineer — TalentHub Inc.  (2023 – present)
+- Lead backend engineer on a hiring-platform API serving 5 M requests/day.
+- Redesigned the candidate-search service in FastAPI, reducing p99 latency from 420 ms to 85 ms.
+- Introduced LangChain-powered resume-screening pipeline, cutting manual review time by 40 %.
+- Wrote and reviewed automated test suites (pytest); maintained 92 % line coverage.
+- Collaborated daily with product managers and ML engineers on feature design and delivery.
 
-Software Developer - Sample Labs (2019 - 2021)
-- Developed Django applications backed by PostgreSQL
+Backend Engineer — Example Corp  (2021 – 2023)
+- Built and maintained 12 REST API endpoints in FastAPI serving 2 M requests/day.
+- Containerised all services with Docker; set up GitHub Actions CI with lint, test, and deploy stages.
+- Migrated legacy MySQL schema to PostgreSQL, improving query performance by 30 %.
+- Mentored two junior developers through code review and pair-programming sessions.
+
+Software Developer — Sample Labs  (2020 – 2021)
+- Developed Django web applications backed by PostgreSQL for internal HR tooling.
+- Wrote SQL migrations and optimised slow queries using EXPLAIN ANALYSE.
+- Contributed to a shared component library, reducing front-end integration time across three teams.
 
 PROJECTS
-- Resume keyword matcher using LangChain and OpenAI embeddings
+- HireScore — LangChain + OpenAI embeddings service that scores resumes against a JD rubric;
+  deployed on GCP Cloud Run, integrated with a Streamlit dashboard.
+- API Rate-Limiter — Redis-backed middleware for FastAPI; published as an open-source package
+  with 400+ GitHub stars.
+- Async Job Queue — lightweight task queue built on PostgreSQL LISTEN/NOTIFY and asyncio,
+  replacing a Celery dependency in a time-critical service.
 
 EDUCATION
-B.Sc. Computer Science, State University, 2019
+B.Sc. Computer Science — State University, 2020
+Relevant coursework: Algorithms, Database Systems, Distributed Systems, Software Engineering
+
+CERTIFICATIONS
+- AWS Certified Developer – Associate (2024)
